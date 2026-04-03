@@ -1,3 +1,4 @@
 apps/api/venv/
 apps/api/.env
 apps/api/bot.log
+.DS_Store
