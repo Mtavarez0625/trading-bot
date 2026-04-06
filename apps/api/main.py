@@ -17,7 +17,7 @@ SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 BASE_URL = os.getenv("ALPACA_BASE_URL")
 DATA_URL = os.getenv("ALPACA_DATA_URL")
 
-WATCHLIST = ["GOOGL"]
+WATCHLIST = ["GOOGL", "AAPL", "MSFT"]
 
 
 @app.get("/")
@@ -380,6 +380,40 @@ def execute_trade(symbol: str):
         })
 
     if signal == "HOLD":
+        # Long-only bot: close any leftover short, otherwise just hold
+        if starting_qty < 0:
+            close_order = {
+                "symbol": symbol,
+                "qty": abs(starting_qty),
+                "side": "buy",
+                "type": "market",
+                "time_in_force": "gtc",
+            }
+            try:
+                close_response = requests.post(
+                    orders_url,
+                    json=close_order,
+                    headers=headers,
+                    timeout=10,
+                )
+                close_result = close_response.json()
+            except Exception as e:
+                close_result = {"error": str(e)}
+
+            actions.append({
+                "step": "close_short_on_hold",
+                "response": close_result,
+            })
+
+            result = {
+                "signal": signal,
+                "starting_qty": starting_qty,
+                "actions": actions,
+                "message": "Closed leftover short position during HOLD",
+            }
+            _log_trade(symbol, result)
+            return result
+
         result = {
             "signal": signal,
             "starting_qty": starting_qty,
