@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import time
+
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.trading.client import TradingClient
+
+from config import Config, load_config
+from data_service import fetch_bars
+from logger import get_logger
+from market_clock import is_market_open, is_within_entry_window
+from performance_tracker import PerformanceTracker
+from portfolio_guard import (
+    count_open_positions,
+    get_account,
+    has_open_orders,
+    has_open_position,
+    is_account_tradable,
+    is_asset_tradable,
+)
+from risk import compute_quantity, compute_stop_price, compute_take_profit_price
+from signal_logger import log_signal
+from state import TradingState
+from strategy import evaluate_signal
+from trade_logger import log_trade
+from trader import submit_bracket_order
+
+log = get_logger("main")
+
+POLL_INTERVAL_SECONDS = 300  # 5 minutes between scans
+
+
+# ---------------------------------------------------------------------------
+# Cycle
+# ---------------------------------------------------------------------------
+
+
+def run_cycle(
+    config: Config,
+    trading_client: TradingClient,
+    data_client: StockHistoricalDataClient,
+    state: TradingState,
+    timeframe: TimeFrame,
+    tracker: PerformanceTracker,
+    session_start_equity: float,
+) -> None:
+    """Evaluate all symbols once. Called on each timer tick."""
+    state.reset_if_new_day()
+
+    if not is_market_open(trading_client):
+        log.info("Market is closed. Skipping cycle.")
+        return
+
+    if not is_within_entry_window(config.entry_window_start, config.entry_window_end):
+        log.info(
+            "Outside entry window (%s–%s ET). No new entries.",
+            config.entry_window_start,
+            config.entry_window_end,
+        )
+        return
+
+    tradable, equity = is_account_tradable(trading_client)
+    if not tradable:
+        log.warning("Account is not tradable. Aborting cycle.")
+        return
+
+    log.info("Account equity: $%.2f", equity)
+
+    # Record starting equity for the day (only sticks on first call per day)
+    state.set_start_equity(equity)
+
+    # Daily loss stop — halt new entries if equity has dropped too far
+    start_equity = state.get_start_equity()
+    if config.daily_loss_stop > 0 and start_equity and start_equity > 0:
+        loss_pct = (start_equity - equity) / start_equity
+        if loss_pct >= config.daily_loss_stop:
+            log.warning(
+                "Daily loss stop triggered: equity=$%.2f, start=$%.2f, "
+                "loss=%.2f%% >= limit=%.2f%%. No new entries this cycle.",
+                equity, start_equity,
+                loss_pct * 100, config.daily_loss_stop * 100,
+            )
+            return
+
+    # Fetch open position count once — updated locally as trades execute
+    open_count = count_open_positions(trading_client)
+    log.info(
+        "Open positions: %d/%d | Watchlist: %d symbols",
+        open_count, config.max_positions, len(config.watchlist()),
+    )
+
+    # Mutable ref so _evaluate_symbol can update it after each execution
+    open_count_ref = [open_count]
+
+    for symbol in config.watchlist():
+        group = config.asset_group(symbol)
+        log.info("--- %s [%s] ---", symbol, group.value)
+        _evaluate_symbol(
+            symbol=symbol,
+            config=config,
+            trading_client=trading_client,
+            data_client=data_client,
+            state=state,
+            timeframe=timeframe,
+            equity=equity,
+            tracker=tracker,
+            open_count_ref=open_count_ref,
+        )
+
+
+def _evaluate_symbol(
+    symbol: str,
+    config: Config,
+    trading_client: TradingClient,
+    data_client: StockHistoricalDataClient,
+    state: TradingState,
+    timeframe: TimeFrame,
+    equity: float,
+    tracker: PerformanceTracker,
+    open_count_ref: list,  # [int] — mutable so execution updates the cycle count
+) -> None:
+    # ------------------------------------------------------------------
+    # Guard: global max positions
+    # Checked per-symbol so each symbol gets its own fair evaluation.
+    # open_count_ref[0] is incremented when a trade executes this cycle.
+    # ------------------------------------------------------------------
+    if open_count_ref[0] >= config.max_positions:
+        log.info(
+            "[%s] Max positions reached (%d/%d). Skipping.",
+            symbol, open_count_ref[0], config.max_positions,
+        )
+        tracker.record_skip(symbol, "max_positions_reached")
+        return
+
+    # Guard: daily trade limit per symbol
+    trade_count = state.get_trade_count(symbol)
+    if trade_count >= config.max_trades_per_symbol:
+        log.info(
+            "[%s] Daily trade limit reached (%d/%d).",
+            symbol, trade_count, config.max_trades_per_symbol,
+        )
+        tracker.record_skip(symbol, "daily_limit_reached")
+        return
+
+    # Guard: asset must be tradable on Alpaca
+    if not is_asset_tradable(trading_client, symbol):
+        log.warning("[%s] Asset not tradable on Alpaca. Skipping.", symbol)
+        tracker.record_skip(symbol, "asset_not_tradable")
+        return
+
+    # Guard: no duplicate position on this symbol
+    if has_open_position(trading_client, symbol):
+        log.info("[%s] Open position already exists. Skipping.", symbol)
+        tracker.record_skip(symbol, "open_position_exists")
+        return
+
+    # Guard: no pending orders on this symbol
+    if has_open_orders(trading_client, symbol):
+        log.info("[%s] Open orders already exist. Skipping.", symbol)
+        tracker.record_skip(symbol, "open_orders_exist")
+        return
+
+    # Fetch bar data
+    df = fetch_bars(data_client, symbol, timeframe)
+    if df is None or df.empty:
+        log.error("[%s] No usable bar data. Skipping.", symbol)
+        tracker.record_skip(symbol, "no_bar_data")
+        return
+
+    # Signal evaluation
+    result = evaluate_signal(df)
+    tracker.record_signal(symbol)
+    log_signal(symbol, result)
+
+    log.info(
+        "[%s] Signal=%s | trend=%s rsi=%s volume=%s | %s",
+        symbol,
+        result.signal,
+        result.trend_ok,
+        result.rsi_ok,
+        result.volume_ok,
+        result.reason,
+    )
+
+    if result.ema_20 is not None:
+        log.info(
+            "[%s] Indicators | EMA20=%.2f EMA50=%.2f RSI=%.1f vol=%.0f vol_avg=%.0f",
+            symbol,
+            result.ema_20,
+            result.ema_50,
+            result.rsi_14,
+            result.volume,
+            result.vol_avg_20,
+        )
+
+    if not result.signal:
+        tracker.record_skip(symbol, result.reason[:80])
+        return
+
+    # Compute trade parameters
+    entry_price = float(df["close"].iloc[-1])
+    stop_price = compute_stop_price(entry_price, config.stop_loss_pct)
+    tp_price = compute_take_profit_price(entry_price, config.take_profit_pct)
+    qty = compute_quantity(equity, config.risk_per_trade, entry_price, config.stop_loss_pct)
+
+    if qty < 1:
+        log.error(
+            "[%s] Calculated qty=0 (equity=%.2f, entry=%.2f). Skipping.",
+            symbol, equity, entry_price,
+        )
+        tracker.record_skip(symbol, "qty_too_small")
+        return
+
+    log.info(
+        "[%s] Trade plan | entry=%.2f | stop=%.2f | tp=%.2f | qty=%d",
+        symbol, entry_price, stop_price, tp_price, qty,
+    )
+
+    print(
+        f"TRADE TRIGGERED: BUY {symbol} | qty={qty} | SL={stop_price:.2f} | TP={tp_price:.2f}"
+        + (" [DRY RUN]" if config.dry_run else "")
+    )
+
+    tracker.record_attempt(symbol)
+
+    order = submit_bracket_order(
+        trading_client=trading_client,
+        symbol=symbol,
+        qty=qty,
+        take_profit_price=tp_price,
+        stop_loss_price=stop_price,
+        dry_run=config.dry_run,
+    )
+
+    executed = order is not None or config.dry_run
+    if executed:
+        tracker.record_execution(symbol)
+        open_count_ref[0] += 1  # update cycle-local position count
+        count = state.increment_trade_count(symbol)
+        log.info(
+            "[%s] Trade recorded. Today's count: %d/%d.",
+            symbol, count, config.max_trades_per_symbol,
+        )
+        log_trade(
+            symbol=symbol,
+            quantity=qty,
+            entry_price=entry_price,
+            stop_loss=stop_price,
+            take_profit=tp_price,
+            result=result,
+            dry_run=config.dry_run,
+        )
+    else:
+        log.error(
+            "[%s] Order returned None — not counted.", symbol
+        )
+        tracker.record_skip(symbol, "order_submission_failed")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    config = load_config()
+
+    log.info("=" * 60)
+    log.info("Trading Bot — Startup")
+    log.info("Paper mode   : %s", config.paper)
+    log.info("Dry run      : %s", config.dry_run)
+    log.info("Equities     : %s", list(config.equities) or "(none)")
+    log.info("Index ETFs   : %s", list(config.index_etfs) or "(none)")
+    log.info("Commodities  : %s", list(config.commodities) or "(none)")
+    log.info("Watchlist    : %d symbols → %s", len(config.watchlist()), config.watchlist())
+    log.info("Window       : %s – %s ET", config.entry_window_start, config.entry_window_end)
+    log.info("Risk/trade   : %.1f%%", config.risk_per_trade * 100)
+    log.info(
+        "Stop loss    : %.1f%%  |  Take profit: %.1f%%",
+        config.stop_loss_pct * 100, config.take_profit_pct * 100,
+    )
+    log.info(
+        "Max pos      : %d  |  Max trades/sym: %d  |  Daily loss stop: %.1f%%",
+        config.max_positions, config.max_trades_per_symbol, config.daily_loss_stop * 100,
+    )
+    log.info("=" * 60)
+
+    trading_client = TradingClient(
+        api_key=config.api_key,
+        secret_key=config.api_secret,
+        paper=config.paper,
+    )
+    data_client = StockHistoricalDataClient(
+        api_key=config.api_key,
+        secret_key=config.api_secret,
+    )
+    timeframe = TimeFrame(5, TimeFrameUnit.Minute)
+    state = TradingState()
+    tracker = PerformanceTracker()
+
+    # Startup account snapshot + seed day-start equity
+    session_start_equity: float = 0.0
+    account = get_account(trading_client)
+    if account is not None:
+        try:
+            session_start_equity = float(account.equity)
+            buying_power = float(account.buying_power)
+            status = getattr(account, "status", "unknown")
+            log.info(
+                "Account | Equity: $%.2f | Buying Power: $%.2f | Status: %s",
+                session_start_equity, buying_power, status,
+            )
+            state.set_start_equity(session_start_equity)
+        except Exception as exc:
+            log.error("Could not parse account snapshot: %s", exc)
+    else:
+        log.error("Could not fetch account snapshot at startup.")
+
+    try:
+        while True:
+            try:
+                run_cycle(
+                    config=config,
+                    trading_client=trading_client,
+                    data_client=data_client,
+                    state=state,
+                    timeframe=timeframe,
+                    tracker=tracker,
+                    session_start_equity=session_start_equity,
+                )
+            except Exception as exc:
+                log.error("Unhandled error in cycle: %s", exc, exc_info=True)
+
+            log.info("Next cycle in %d seconds.", POLL_INTERVAL_SECONDS)
+            time.sleep(POLL_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        log.info("Bot stopped by user (KeyboardInterrupt).")
+        tracker.log_summary(log)
+        tracker.save()
+
+
+if __name__ == "__main__":
+    main()

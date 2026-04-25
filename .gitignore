@@ -2,3 +2,9 @@ apps/api/venv/
 apps/api/.env
 apps/api/bot.log
 .DS_Store
+.env
+venv/
+__pycache__/
+*.db
+*.sqlite3
+node_modules/
