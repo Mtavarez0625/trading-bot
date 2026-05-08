@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Set, Tuple
+from typing import Collection, Set, Tuple
 
 from logger import get_logger
 
@@ -100,6 +100,18 @@ def is_asset_tradable(trading_client, symbol: str) -> bool:
     except Exception as exc:
         log.warning("[%s] Could not verify asset tradability: %s", symbol, exc)
         return False
+
+
+def count_group_positions(trading_client, group_symbols: Collection[str]) -> int:
+    """
+    Count how many symbols from a correlated group currently have open positions.
+
+    Used for the correlated-ETF guard: if this returns >= max_etf_group_positions,
+    new entries in the same group should be skipped.
+    Returns 0 on any API failure so callers fail safe (no extra blocks).
+    """
+    open_syms = get_open_position_symbols(trading_client)
+    return sum(1 for s in group_symbols if s.upper() in open_syms)
 
 
 def count_open_positions(trading_client) -> int:

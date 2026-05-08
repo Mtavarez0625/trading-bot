@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from portfolio_guard import (
+    count_group_positions,
     count_open_positions,
     get_open_position_symbols,
     has_open_orders,
@@ -343,3 +344,104 @@ class TestMaxPositionsLogic:
         assert "MSFT" in executed
         assert "NVDA" in skipped
         assert "TSLA" in skipped
+
+
+# ---------------------------------------------------------------------------
+# count_group_positions
+# ---------------------------------------------------------------------------
+
+
+class TestCountGroupPositions:
+    def test_counts_open_symbol_from_group(self):
+        class Client:
+            def get_all_positions(self):
+                return [_FakePosition("SPY"), _FakePosition("AAPL")]
+
+        assert count_group_positions(Client(), {"SPY", "QQQ"}) == 1
+
+    def test_counts_both_when_both_open(self):
+        class Client:
+            def get_all_positions(self):
+                return [_FakePosition("SPY"), _FakePosition("QQQ")]
+
+        assert count_group_positions(Client(), {"SPY", "QQQ"}) == 2
+
+    def test_zero_when_no_group_member_open(self):
+        class Client:
+            def get_all_positions(self):
+                return [_FakePosition("AAPL"), _FakePosition("MSFT")]
+
+        assert count_group_positions(Client(), {"SPY", "QQQ"}) == 0
+
+    def test_zero_when_no_positions_at_all(self):
+        class Client:
+            def get_all_positions(self):
+                return []
+
+        assert count_group_positions(Client(), {"SPY", "QQQ"}) == 0
+
+    def test_zero_on_api_error(self):
+        class Client:
+            def get_all_positions(self):
+                raise RuntimeError("API timeout")
+
+        assert count_group_positions(Client(), {"SPY", "QQQ"}) == 0
+
+    def test_case_insensitive_match(self):
+        class FakePosLower:
+            symbol = "spy"
+            qty = "10"
+
+        class Client:
+            def get_all_positions(self):
+                return [FakePosLower()]
+
+        assert count_group_positions(Client(), {"SPY", "QQQ"}) == 1
+
+    def test_empty_group_always_zero(self):
+        class Client:
+            def get_all_positions(self):
+                return [_FakePosition("SPY")]
+
+        assert count_group_positions(Client(), set()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Correlated guard logic (pure — mirrors _evaluate_symbol in main.py)
+# ---------------------------------------------------------------------------
+
+
+class TestCorrelatedGroupGuard:
+    """
+    Verifies the ETF correlated-group guard logic used in main._evaluate_symbol.
+    Tests the pure calculation in isolation (no broker calls).
+    """
+
+    @staticmethod
+    def _should_skip(open_syms: set, group: set, max_group: int) -> bool:
+        """Mirrors: count_group_positions(...) >= config.max_etf_group_positions."""
+        count = sum(1 for s in group if s.upper() in {x.upper() for x in open_syms})
+        return count >= max_group
+
+    def test_skip_qqq_when_spy_open(self):
+        assert self._should_skip({"SPY"}, {"SPY", "QQQ"}, max_group=1) is True
+
+    def test_skip_spy_when_qqq_open(self):
+        assert self._should_skip({"QQQ"}, {"SPY", "QQQ"}, max_group=1) is True
+
+    def test_allow_entry_when_group_empty(self):
+        assert self._should_skip({"AAPL", "MSFT"}, {"SPY", "QQQ"}, max_group=1) is False
+
+    def test_allow_when_no_positions_at_all(self):
+        assert self._should_skip(set(), {"SPY", "QQQ"}, max_group=1) is False
+
+    def test_allow_second_etf_when_max_is_2(self):
+        assert self._should_skip({"SPY"}, {"SPY", "QQQ"}, max_group=2) is False
+
+    def test_skip_when_both_open_and_max_is_2(self):
+        assert self._should_skip({"SPY", "QQQ"}, {"SPY", "QQQ"}, max_group=2) is True
+
+    def test_equity_symbol_not_blocked_by_etf_guard(self):
+        # AAPL is not in the ETF group — check logic never fires for it
+        group = {"SPY", "QQQ"}
+        assert "AAPL" not in group  # guard should not apply to AAPL

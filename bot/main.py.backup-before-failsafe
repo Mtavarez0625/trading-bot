@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import math
-from datetime import datetime, time as dt_time
-from zoneinfo import ZoneInfo
+from datetime import datetime, time
 import time
 
 from alpaca.data.historical import StockHistoricalDataClient
@@ -11,13 +9,10 @@ from alpaca.trading.client import TradingClient
 
 from config import Config, load_config
 from data_service import fetch_bars
-from exit_manager import monitor_and_manage_exits
 from logger import get_logger
 from market_clock import is_market_open, is_within_entry_window
-from market_regime import check_market_regime
 from performance_tracker import PerformanceTracker
 from portfolio_guard import (
-    count_group_positions,
     count_open_positions,
     get_account,
     has_open_orders,
@@ -66,25 +61,12 @@ def run_cycle(
         )
         return
 
-    # Check open positions FIRST — log snapshots and apply exit logic before
-    # evaluating any new entries.
-    monitor_and_manage_exits(trading_client)
-
-    tradable, alpaca_equity = is_account_tradable(trading_client)
+    tradable, equity = is_account_tradable(trading_client)
     if not tradable:
         log.warning("Account is not tradable. Aborting cycle.")
         return
 
-    if config.dry_run:
-        equity = config.paper_account_equity
-        log.info(
-            "[DRY RUN] Sizing equity: $%.2f (simulated PAPER_ACCOUNT_EQUITY — "
-            "Alpaca account equity $%.2f is ignored for sizing)",
-            equity, alpaca_equity,
-        )
-    else:
-        equity = alpaca_equity
-        log.info("Account equity: $%.2f", equity)
+    log.info("Account equity: $%.2f", equity)
 
     # Record starting equity for the day (only sticks on first call per day)
     state.set_start_equity(equity)
@@ -102,29 +84,17 @@ def run_cycle(
             )
             return
 
-    # Market regime filter — skip all new long entries if SPY is not bullish.
-    # Fail-safe: if SPY data is unavailable, check_market_regime returns bearish.
-    regime = check_market_regime(data_client, timeframe)
-    if not regime.is_bullish:
-        log.warning(
-            "Market regime: NOT BULLISH — no new entries this cycle. Reason: %s",
-            regime.reason,
-        )
-        return
-    log.info("Market regime: BULLISH — %s", regime.reason)
-
     # Fetch open position count once — updated locally as trades execute
     open_count = count_open_positions(trading_client)
-    trade_syms = config.trade_watchlist()
     log.info(
-        "Open positions: %d/%d | Trade symbols: %s | Regime ETFs: %s",
-        open_count, config.max_positions, trade_syms, list(config.index_etfs),
+        "Open positions: %d/%d | Watchlist: %d symbols",
+        open_count, config.max_positions, len(config.watchlist()),
     )
 
     # Mutable ref so _evaluate_symbol can update it after each execution
     open_count_ref = [open_count]
 
-    for symbol in trade_syms:
+    for symbol in config.watchlist():
         group = config.asset_group(symbol)
         log.info("--- %s [%s] ---", symbol, group.value)
         _evaluate_symbol(
@@ -186,18 +156,6 @@ def _evaluate_symbol(
         tracker.record_skip(symbol, "open_position_exists")
         return
 
-    # Guard: correlated ETF group — only one position from the index-ETF group at a time.
-    # SPY and QQQ are treated as a single correlated group (both track the broad US market).
-    if config.is_in_etf_group(symbol) and config.index_etfs:
-        group_count = count_group_positions(trading_client, config.index_etfs)
-        if group_count >= config.max_etf_group_positions:
-            log.info(
-                "[%s] Correlated position already exists. Skipping.",
-                symbol,
-            )
-            tracker.record_skip(symbol, "correlated_position_exists")
-            return
-
     # Guard: no pending orders on this symbol
     if has_open_orders(trading_client, symbol):
         log.info("[%s] Open orders already exist. Skipping.", symbol)
@@ -245,35 +203,12 @@ def _evaluate_symbol(
     entry_price = float(df["close"].iloc[-1])
     stop_price = compute_stop_price(entry_price, config.stop_loss_pct)
     tp_price = compute_take_profit_price(entry_price, config.take_profit_pct)
-    risk_amount    = equity * config.risk_per_trade
-    stop_distance  = entry_price * config.stop_loss_pct
-    max_alloc_usd  = equity * config.max_allocation_pct
-    raw_risk_qty   = int(math.floor(risk_amount / stop_distance)) if stop_distance > 0 else 0
-    max_alloc_qty  = int(math.floor(max_alloc_usd / entry_price)) if entry_price > 0 else 0
-
-    qty = compute_quantity(
-        equity, config.risk_per_trade, entry_price,
-        config.stop_loss_pct, config.max_allocation_pct,
-    )
-
-    log.info(
-        "[%s] Sizing | price=%.2f | equity=%.2f | "
-        "max_alloc=$%.2f (%.0f%%) | risk_$=%.2f (%.1f%%) | "
-        "stop_pct=%.1f%% | risk_qty=%d | alloc_qty=%d | final_qty=%d",
-        symbol, entry_price, equity,
-        max_alloc_usd, config.max_allocation_pct * 100,
-        risk_amount, config.risk_per_trade * 100,
-        config.stop_loss_pct * 100,
-        raw_risk_qty, max_alloc_qty, qty,
-    )
+    qty = compute_quantity(equity, config.risk_per_trade, entry_price, config.stop_loss_pct)
 
     if qty < 1:
-        log.warning(
-            "[%s] SKIP: qty=0 — $%.2f/share unaffordable "
-            "(equity=$%.2f, max_alloc=$%.2f at %.0f%%). "
-            "This is a SKIP, not an entry.",
-            symbol, entry_price, equity, max_alloc_usd,
-            config.max_allocation_pct * 100,
+        log.error(
+            "[%s] Calculated qty=0 (equity=%.2f, entry=%.2f). Skipping.",
+            symbol, equity, entry_price,
         )
         tracker.record_skip(symbol, "qty_too_small")
         return
@@ -299,12 +234,6 @@ def _evaluate_symbol(
         dry_run=config.dry_run,
     )
 
-    # Extract order details for the trade log
-    order_id = str(getattr(order, "id", "")) if order else ""
-    order_status = str(getattr(order, "status", "")) if order else (
-        "dry_run" if config.dry_run else "unknown"
-    )
-
     executed = order is not None or config.dry_run
     if executed:
         tracker.record_execution(symbol)
@@ -322,8 +251,6 @@ def _evaluate_symbol(
             take_profit=tp_price,
             result=result,
             dry_run=config.dry_run,
-            order_id=order_id or None,
-            status=order_status or None,
         )
     else:
         log.error(
@@ -344,28 +271,6 @@ def main() -> None:
     log.info("Trading Bot — Startup")
     log.info("Paper mode   : %s", config.paper)
     log.info("Dry run      : %s", config.dry_run)
-
-    if not config.dry_run:
-        log.warning(
-            "*** DRY_RUN is FALSE — real paper orders WILL be submitted to Alpaca. ***"
-            " Set DRY_RUN=true to evaluate signals without placing orders."
-        )
-    else:
-        log.info("--- DRY RUN CONFIG SUMMARY ---")
-        log.info(
-            "Simulated equity : $%.2f  (PAPER_ACCOUNT_EQUITY)",
-            config.paper_account_equity,
-        )
-        log.info(
-            "Max position val : $%.2f  per trade  (MAX_ALLOCATION_PCT=%.0f%%)",
-            config.paper_account_equity * config.max_allocation_pct,
-            config.max_allocation_pct * 100,
-        )
-        log.info(
-            "Risk amount      : $%.2f  per trade  (RISK_PER_TRADE=%.1f%%)",
-            config.paper_account_equity * config.risk_per_trade,
-            config.risk_per_trade * 100,
-        )
     log.info("Equities     : %s", list(config.equities) or "(none)")
     log.info("Index ETFs   : %s", list(config.index_etfs) or "(none)")
     log.info("Commodities  : %s", list(config.commodities) or "(none)")
@@ -379,14 +284,6 @@ def main() -> None:
     log.info(
         "Max pos      : %d  |  Max trades/sym: %d  |  Daily loss stop: %.1f%%",
         config.max_positions, config.max_trades_per_symbol, config.daily_loss_stop * 100,
-    )
-    log.info(
-        "Max ETF group: %d  (correlated ETF group: %s)",
-        config.max_etf_group_positions, list(config.index_etfs) or "(none)",
-    )
-    log.info(
-        "Max allocation: %.1f%%  (max single-position value vs equity)",
-        config.max_allocation_pct * 100,
     )
     log.info("=" * 60)
 
@@ -408,41 +305,23 @@ def main() -> None:
     account = get_account(trading_client)
     if account is not None:
         try:
-            alpaca_equity = float(account.equity)
+            session_start_equity = float(account.equity)
             buying_power = float(account.buying_power)
             status = getattr(account, "status", "unknown")
             log.info(
                 "Account | Equity: $%.2f | Buying Power: $%.2f | Status: %s",
-                alpaca_equity, buying_power, status,
+                session_start_equity, buying_power, status,
             )
-            if config.dry_run:
-                session_start_equity = config.paper_account_equity
-                log.info(
-                    "[DRY RUN] Sizing uses simulated equity: $%.2f (PAPER_ACCOUNT_EQUITY). "
-                    "Alpaca buying power is ignored.",
-                    session_start_equity,
-                )
-            else:
-                session_start_equity = alpaca_equity
             state.set_start_equity(session_start_equity)
         except Exception as exc:
             log.error("Could not parse account snapshot: %s", exc)
     else:
-        if config.dry_run:
-            session_start_equity = config.paper_account_equity
-            log.warning(
-                "Could not fetch Alpaca account snapshot. "
-                "[DRY RUN] Falling back to simulated equity: $%.2f",
-                session_start_equity,
-            )
-            state.set_start_equity(session_start_equity)
-        else:
-            log.error("Could not fetch account snapshot at startup.")
+        log.error("Could not fetch account snapshot at startup.")
 
     try:
         while True:
-            now_et = datetime.now(ZoneInfo("America/New_York")).time()
-            market_close = dt_time(16, 0)
+            now_et = datetime.now().astimezone().time()
+            market_close = time(16, 0)
 
             if now_et >= market_close:
                 log.info("Market close fail-safe triggered. Shutting down bot.")

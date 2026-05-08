@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 import journal
+from scoring import compute_candidate_score, score_summary_line
 
 load_dotenv()
 
@@ -19,6 +20,7 @@ app = FastAPI(title="Trading Bot API V3")
 @app.on_event("startup")
 def _startup():
     journal.init_db()
+    _reconcile_journal_state()
 
 trade_log = []
 
@@ -27,9 +29,15 @@ SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 BASE_URL   = os.getenv("ALPACA_BASE_URL")
 DATA_URL   = os.getenv("ALPACA_DATA_URL")
 
-# ── Watchlist (comma-separated env var or hardcoded default) ──────────────────
-_wl_env   = os.getenv("WATCHLIST", "")
-WATCHLIST = [s.strip() for s in _wl_env.split(",") if s.strip()] or ["GOOGL", "AAPL", "MSFT"]
+# ── Symbol lists ──────────────────────────────────────────────────────────────
+# TRADE_WATCHLIST: symbols eligible for new entries (no SPY/QQQ/IWM)
+_tw_env       = os.getenv("TRADE_WATCHLIST", os.getenv("WATCHLIST", ""))
+TRADE_WATCHLIST = [s.strip().upper() for s in _tw_env.split(",") if s.strip()] or ["PLTR", "AMD", "SOFI", "HOOD", "INTC", "XLK"]
+WATCHLIST = TRADE_WATCHLIST  # backward-compat alias
+
+# REGIME_SYMBOLS: used for market direction checks only — never traded
+_rs_env        = os.getenv("REGIME_SYMBOLS", "SPY,QQQ,IWM")
+REGIME_SYMBOLS = {s.strip().upper() for s in _rs_env.split(",") if s.strip()}
 
 # ── V3 Risk & Strategy Constants (all configurable via .env) ──────────────────
 MAX_OPEN_POSITIONS     = int(os.getenv("MAX_OPEN_POSITIONS",    "3"))
@@ -41,6 +49,10 @@ RISK_PER_TRADE_PCT     = float(os.getenv("RISK_PER_TRADE_PCT",  "0.01"))
 STOP_LOSS_PCT          = float(os.getenv("STOP_LOSS_PCT",       "0.03"))
 TAKE_PROFIT_PCT        = float(os.getenv("TAKE_PROFIT_PCT",     "0.05"))
 TRAILING_STOP_PCT      = float(os.getenv("TRAILING_STOP_PCT",   "0.0"))  # 0 = use fixed stop
+
+# Simulated account equity used for position sizing in DRY_RUN mode.
+# Prevents Alpaca paper buying power from inflating position sizes.
+PAPER_ACCOUNT_EQUITY   = float(os.getenv("PAPER_ACCOUNT_EQUITY", "1000"))
 
 # ── V3 Signal Enhancement Constants ──────────────────────────────────────────
 RSI_PERIOD         = int(os.getenv("RSI_PERIOD",       "14"))
@@ -67,6 +79,12 @@ ALLOW_STRONG_DAILY_WEAK_INTRADAY   = os.getenv("ALLOW_STRONG_DAILY_WEAK_INTRADAY
 # Require MACD histogram to be rising (curr > prev) for early-trend entries — filters weakening momentum
 EARLY_TREND_REQUIRE_MACD_IMPROVING = os.getenv("EARLY_TREND_REQUIRE_MACD_IMPROVING",       "true").lower() == "true"
 
+# ── Entry quality scoring ──────────────────────────────────────────────────────
+# Minimum 0-100 score for a new entry to be allowed. A=75, A+=85, B=65.
+MIN_ENTRY_SCORE       = int(os.getenv("MIN_ENTRY_SCORE",         "75"))
+# Set true to allow B-grade (65-74) setups to enter. Default false = A/A+ only.
+ALLOW_B_SETUP_ENTRIES = os.getenv("ALLOW_B_SETUP_ENTRIES", "false").lower() == "true"
+
 # ── Execution safety & paper-trade realism (all configurable via .env) ────────
 # Kill switch: when true, only position monitoring/protection runs — no new entries.
 DISABLE_NEW_ENTRIES         = os.getenv("DISABLE_NEW_ENTRIES",         "false").lower() == "true"
@@ -79,6 +97,20 @@ SYMBOL_ERROR_THRESHOLD      = int(os.getenv("SYMBOL_ERROR_THRESHOLD",  "3"))
 SYMBOL_ERROR_COOLDOWN_MIN   = int(os.getenv("SYMBOL_ERROR_COOLDOWN_MIN", "60"))
 # Observe-only mode: after N consecutive global API failures, disable new entries.
 OBSERVE_ONLY_AFTER_FAILURES = int(os.getenv("OBSERVE_ONLY_AFTER_FAILURES", "10"))
+
+# ── Session stats (counters reset on startup) ─────────────────────────────────
+_session_scanned:  int = 0
+_session_signals:  int = 0
+_session_entered:  int = 0
+_session_skipped:  int = 0
+_session_blocked:  int = 0
+_session_errors:   int = 0
+_session_exited:   int = 0
+# Grade breakdown for BUY candidates this session
+_session_ap: int = 0  # A+ setups (score ≥ 85)
+_session_a:  int = 0  # A  setups (score 75-84)
+_session_b:  int = 0  # B  setups (score 65-74)
+_session_c:  int = 0  # C  setups (score < 65) or non-BUY signals
 
 # ── Runtime safety state (in-memory) ─────────────────────────────────────────
 _last_trade_time: dict     = {}          # {symbol: datetime} — trade cooldown
@@ -96,6 +128,49 @@ def _headers():
         "APCA-API-KEY-ID":     API_KEY,
         "APCA-API-SECRET-KEY": SECRET_KEY,
     }
+
+
+# ── Journal reconciliation ────────────────────────────────────────────────────
+def _reconcile_journal_state() -> list:
+    """
+    Compare open journal entries against real Alpaca positions.
+    Any journal entry marked open for a symbol that Alpaca no longer holds
+    is closed with exit_reason='reconcile_stale'.
+
+    Called on startup to flush stale entries caused by:
+    - dry-run trades that were recorded but never really opened
+    - positions that closed externally while the bot was offline
+
+    Returns a list of cleared symbol names.
+    """
+    cleared = []
+    try:
+        resp = requests.get(f"{BASE_URL}/v2/positions", headers=_headers(), timeout=10)
+        alpaca_syms: set = set()
+        if resp.status_code == 200:
+            for p in resp.json():
+                qty = float(p.get("qty", 0))
+                if qty > 0:
+                    alpaca_syms.add(str(p.get("symbol", "")).upper())
+    except Exception as exc:
+        print(f"[reconcile] WARNING: could not fetch Alpaca positions: {exc}")
+        alpaca_syms = set()
+
+    open_paper = journal.get_open_paper_positions()
+    for pos in open_paper:
+        sym = str(pos.get("symbol", "")).upper()
+        # In dry-run mode there are never real Alpaca positions — clear all journal entries
+        # that survived a restart, since we have no real position backing them.
+        if DRY_RUN or sym not in alpaca_syms:
+            journal.close_paper_trade(sym, 0.0, "reconcile_stale")
+            cleared.append(sym)
+            print(f"[reconcile] STATE RECONCILED: cleared stale local position for {sym}")
+
+    if cleared:
+        print(f"[reconcile] Cleared {len(cleared)} stale journal position(s): {cleared}")
+    else:
+        print("[reconcile] No stale journal positions found.")
+    return cleared
 
 
 # ── Cooldown helpers ──────────────────────────────────────────────────────────
@@ -670,7 +745,11 @@ def config_summary():
     """Returns non-sensitive strategy config so you can confirm .env loaded correctly on startup."""
     return {
         "dry_run":                      DRY_RUN,
-        "watchlist":                    WATCHLIST,
+        "paper_account_equity":         PAPER_ACCOUNT_EQUITY,
+        "effective_dry_run_equity":     PAPER_ACCOUNT_EQUITY if DRY_RUN else None,
+        "max_position_value":           round(PAPER_ACCOUNT_EQUITY * MAX_ALLOCATION_PCT, 2) if DRY_RUN else None,
+        "trade_watchlist":              TRADE_WATCHLIST,
+        "regime_symbols":               sorted(REGIME_SYMBOLS),
         "max_open_positions":           MAX_OPEN_POSITIONS,
         "trade_cooldown_minutes":       TRADE_COOLDOWN_MINUTES,
         "daily_loss_limit_pct":         DAILY_LOSS_LIMIT_PCT,
@@ -694,6 +773,8 @@ def config_summary():
         "intraday_sma_tolerance_pct":          INTRADAY_SMA_TOLERANCE_PCT,
         "allow_strong_daily_weak_intraday":    ALLOW_STRONG_DAILY_WEAK_INTRADAY,
         "early_trend_require_macd_improving":  EARLY_TREND_REQUIRE_MACD_IMPROVING,
+        "min_entry_score":                     MIN_ENTRY_SCORE,
+        "allow_b_setup_entries":               ALLOW_B_SETUP_ENTRIES,
     }
 
 
@@ -906,31 +987,53 @@ def debug_clock():
         }
 
 
-def calculate_position_size(price: float, equity: float = 0) -> int:
+def calculate_position_size(price: float, equity: float = 0, symbol: str = "") -> int:
     """
     V3 position sizing — dual cap:
       1. Risk-based: risk RISK_PER_TRADE_PCT of equity over STOP_LOSS_PCT stop.
       2. Allocation cap: never exceed MAX_ALLOCATION_PCT of equity per trade.
-    Final qty = min(risk_based, allocation_based), floor at 1.
+    Final qty = min(risk_based, allocation_based).
+    Returns 0 when the symbol is unaffordable — callers must treat 0 as SKIP.
+    In DRY_RUN mode uses PAPER_ACCOUNT_EQUITY, not Alpaca paper buying power.
     """
     if equity <= 0:
-        try:
-            response = requests.get(f"{BASE_URL}/v2/account", headers=_headers(), timeout=10)
-            equity = float(response.json().get("equity", 0))
-        except Exception:
-            equity = 0
+        if DRY_RUN:
+            equity = PAPER_ACCOUNT_EQUITY
+        else:
+            try:
+                response = requests.get(f"{BASE_URL}/v2/account", headers=_headers(), timeout=10)
+                equity = float(response.json().get("equity", 0))
+            except Exception:
+                equity = 0
 
     if equity <= 0 or price <= 0:
-        return 1
+        return 0
 
-    risk_dollars      = equity * RISK_PER_TRADE_PCT
-    risk_per_share    = price  * STOP_LOSS_PCT
-    risk_based_qty    = int(risk_dollars / risk_per_share) if risk_per_share > 0 else 1
+    risk_dollars   = equity * RISK_PER_TRADE_PCT
+    risk_per_share = price  * STOP_LOSS_PCT
+    risk_based_qty = int(risk_dollars / risk_per_share) if risk_per_share > 0 else 0
 
-    max_dollars       = equity * MAX_ALLOCATION_PCT
-    allocation_qty    = int(max_dollars / price)
+    max_dollars    = equity * MAX_ALLOCATION_PCT
+    allocation_qty = int(max_dollars / price)
 
-    return max(min(risk_based_qty, allocation_qty), 1)
+    qty = min(risk_based_qty, allocation_qty)
+
+    tag = f"[{symbol}] " if symbol else ""
+    print(
+        f"[sizing] {tag}price=${price:.2f} | equity=${equity:.2f} | "
+        f"max_alloc=${max_dollars:.2f} ({MAX_ALLOCATION_PCT*100:.0f}%) | "
+        f"risk_$=${risk_dollars:.2f} ({RISK_PER_TRADE_PCT*100:.1f}%) | "
+        f"risk_qty={risk_based_qty} | alloc_qty={allocation_qty} | final_qty={qty}"
+    )
+
+    if qty < 1:
+        print(
+            f"[sizing] SKIP: {tag}qty=0 — ${price:.2f}/share unaffordable "
+            f"(max_alloc=${max_dollars:.2f}, need ≥${price:.2f})"
+        )
+        return 0
+
+    return qty
 
 
 def _log_trade(symbol: str, result: dict, signal_data: dict = None):
@@ -967,6 +1070,9 @@ def _log_trade(symbol: str, result: dict, signal_data: dict = None):
         "intraday_margin_pct":   _sd.get("intraday_margin_pct"),
         "spy_bullish":           _sd.get("spy_bullish"),
         "spy_reason":            _sd.get("spy_reason"),
+        "score":                 result.get("score") or _sd.get("score"),
+        "grade":                 result.get("grade") or _sd.get("grade"),
+        "new_entry_opened":      result.get("new_entry_opened", False),
     }
     trade_log.append(entry)
     journal.log_event(entry)
@@ -1115,6 +1221,26 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
         }
         _log_trade(symbol, result)
         return result
+
+    # ── Candidate scoring (BUY signals only) ─────────────────────────────────
+    # Score is computed before any gate checks so it gets logged even for blocked setups.
+    candidate_score  = 0
+    candidate_grade  = "C"
+    score_components: dict = {}
+    if signal == "BUY":
+        global _session_ap, _session_a, _session_b, _session_c
+        _scored          = compute_candidate_score(signal_data, PAPER_ACCOUNT_EQUITY, MAX_ALLOCATION_PCT)
+        candidate_score  = _scored["score"]
+        candidate_grade  = _scored["grade"]
+        score_components = _scored["components"]
+        signal_data["score"]            = candidate_score
+        signal_data["grade"]            = candidate_grade
+        signal_data["score_components"] = score_components
+        print(score_summary_line(symbol, candidate_score, candidate_grade, signal_data))
+        if candidate_grade == "A+":   _session_ap += 1
+        elif candidate_grade == "A":  _session_a  += 1
+        elif candidate_grade == "B":  _session_b  += 1
+        else:                         _session_c  += 1
 
     # ── 2. Get current position ──────────────────────────────────────────────
     position_data   = get_position(symbol)
@@ -1304,6 +1430,42 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
             _log_trade(symbol, result, signal_data)
             return result
 
+        # Score gate — require A or A+ setup quality (configurable)
+        # B-setups can be unlocked via ALLOW_B_SETUP_ENTRIES=true.
+        # This runs AFTER the free/fast checks and BEFORE expensive data calls.
+        if candidate_score < MIN_ENTRY_SCORE:
+            if candidate_grade == "B" and ALLOW_B_SETUP_ENTRIES:
+                print(
+                    f"[score] {symbol} | B-setup allowed (ALLOW_B_SETUP_ENTRIES=true) "
+                    f"score={candidate_score} [{candidate_grade}]"
+                )
+            else:
+                print(
+                    f"[score] {symbol} | SKIP — score={candidate_score} [{candidate_grade}] "
+                    f"below threshold={MIN_ENTRY_SCORE}"
+                )
+                result = {
+                    "signal":           signal,
+                    "signal_reason":    signal_data.get("signal_reason"),
+                    "decision_summary": (
+                        f"SKIP: score={candidate_score} [{candidate_grade}] "
+                        f"below threshold={MIN_ENTRY_SCORE} "
+                        f"(A≥75, A+≥85, B-allowed={ALLOW_B_SETUP_ENTRIES})"
+                    ),
+                    "starting_qty":     starting_qty,
+                    "actions":          actions,
+                    "blocked_by":       "score_below_threshold",
+                    "score":            candidate_score,
+                    "grade":            candidate_grade,
+                    "message": (
+                        f"{symbol} quality score={candidate_score} [{candidate_grade}] "
+                        f"is below minimum={MIN_ENTRY_SCORE}. "
+                        f"Set ALLOW_B_SETUP_ENTRIES=true to trade B setups."
+                    ),
+                }
+                _log_trade(symbol, result, signal_data)
+                return result
+
         # Stale data guard — skip new entries when bar data is too old
         _daily_df_check = _fetch_bars(symbol, timeframe="1Day", days=5, limit=5)
         stale, stale_reason = _is_data_stale(_daily_df_check)
@@ -1333,17 +1495,48 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
             close_result = _submit_order(close_order)
             actions.append({"step": "close_short", "response": close_result})
 
-        # Position sizing
-        try:
-            acct_resp = requests.get(f"{BASE_URL}/v2/account", headers=_headers(), timeout=10)
-            equity    = float(acct_resp.json().get("equity", 0))
-        except Exception:
-            equity = 0
+        # Position sizing — dry-run uses simulated equity, not Alpaca paper buying power
+        if DRY_RUN:
+            equity = PAPER_ACCOUNT_EQUITY
+            print(
+                f"[dry-run] {symbol} | sizing based on simulated ${PAPER_ACCOUNT_EQUITY:.2f} equity "
+                f"(PAPER_ACCOUNT_EQUITY) | max_position=${PAPER_ACCOUNT_EQUITY * MAX_ALLOCATION_PCT:.2f} "
+                f"| risk_dollars=${PAPER_ACCOUNT_EQUITY * RISK_PER_TRADE_PCT:.2f}"
+            )
+        else:
+            try:
+                acct_resp = requests.get(f"{BASE_URL}/v2/account", headers=_headers(), timeout=10)
+                equity    = float(acct_resp.json().get("equity", 0))
+            except Exception:
+                equity = 0
 
-        trade_qty        = calculate_position_size(signal_data["close"], equity)
-        entry_price      = signal_data["close"]
-        stop_loss_price  = round(entry_price * (1 - STOP_LOSS_PCT),   2)
+        entry_price       = signal_data["close"]
+        trade_qty         = calculate_position_size(entry_price, equity, symbol)
+        stop_loss_price   = round(entry_price * (1 - STOP_LOSS_PCT),   2)
         take_profit_price = round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
+
+        # Guard: qty=0 means this symbol is unaffordable at current equity/allocation.
+        # Do NOT record a journal entry — there is no real position to track.
+        if trade_qty <= 0:
+            result = {
+                "signal":           signal,
+                "signal_reason":    signal_data.get("signal_reason"),
+                "decision_summary": (
+                    f"SKIP: qty=0 — ${entry_price:.2f}/share unaffordable "
+                    f"(equity=${equity:.2f}, max_alloc={MAX_ALLOCATION_PCT*100:.0f}%"
+                    f"=${equity * MAX_ALLOCATION_PCT:.2f})"
+                ),
+                "starting_qty":     starting_qty,
+                "actions":          actions,
+                "blocked_by":       "qty_zero_unaffordable",
+                "message": (
+                    f"Cannot size {symbol}: ${entry_price:.2f}/share exceeds "
+                    f"${equity * MAX_ALLOCATION_PCT:.2f} allocation limit "
+                    f"({MAX_ALLOCATION_PCT*100:.0f}% of ${equity:.2f})"
+                ),
+            }
+            _log_trade(symbol, result, signal_data)
+            return result
 
         # Submit a single bracket order (market buy + stop-loss + take-profit legs).
         # This avoids the "insufficient qty available" / held_for_orders conflict
@@ -1423,6 +1616,8 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
             "volume_confirmed":     signal_data.get("volume_confirmed"),
             "breakout_confirmed":   signal_data.get("breakout_confirmed"),
             "intraday_confirmed":   signal_data.get("intraday_confirmed"),
+            "entry_score":          candidate_score,
+            "entry_grade":          candidate_grade,
         })
 
         result = {
@@ -1438,6 +1633,8 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
             "take_profit_price": take_profit_price,
             "new_entry_opened":  True,
             "dry_run":           DRY_RUN,
+            "score":             candidate_score,
+            "grade":             candidate_grade,
         }
         _log_trade(symbol, result, signal_data)
         return result
@@ -1494,12 +1691,12 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
             return result
 
         result = {
-            "signal":           signal,
-            "signal_reason":    signal_data.get("signal_reason"),
-            "decision_summary": "SKIP: no position to close",
+            "signal":           "HOLD",
+            "signal_reason":    "no open position; exit signal ignored",
+            "decision_summary": "HOLD | no open position; exit signal ignored",
             "starting_qty":     starting_qty,
             "actions":          actions,
-            "message":          "No position to close",
+            "message":          "No position to close — exit signal ignored",
         }
         _log_trade(symbol, result, signal_data)
         return result
@@ -1560,6 +1757,378 @@ def session_summary():
         "blocked_counts":   blocked_counts,
         "entry_tier_counts": tier_counts,
         "recent_decisions": recent,
+    }
+
+
+@app.post("/reconcile")
+def reconcile():
+    """
+    Manually reconcile journal state against live Alpaca positions.
+    Clears stale open journal entries for symbols where Alpaca reports no position.
+    Safe to call at any time — closes only entries with no real backing position.
+    """
+    cleared = _reconcile_journal_state()
+    return {
+        "cleared_symbols": cleared,
+        "cleared_count": len(cleared),
+        "message": (
+            f"Cleared {len(cleared)} stale position(s)." if cleared
+            else "No stale positions found — journal is clean."
+        ),
+    }
+
+
+@app.get("/check-state")
+def check_state():
+    """
+    Print local bot state, Alpaca open positions, and dry-run journal positions.
+    Use this before market open to verify the bot starts clean.
+    """
+    # Alpaca real/paper positions
+    alpaca_positions = []
+    try:
+        resp = requests.get(f"{BASE_URL}/v2/positions", headers=_headers(), timeout=10)
+        if resp.status_code == 200:
+            alpaca_positions = [
+                {
+                    "symbol":      p.get("symbol"),
+                    "qty":         p.get("qty"),
+                    "avg_entry":   p.get("avg_entry_price"),
+                    "market_val":  p.get("market_value"),
+                    "unrealized_pl": p.get("unrealized_pl"),
+                }
+                for p in resp.json()
+            ]
+    except Exception as exc:
+        alpaca_positions = [{"error": str(exc)}]
+
+    # Journal dry-run paper positions
+    open_paper = journal.get_open_paper_positions()
+
+    # Trade cooldown state
+    cooldown_status = {}
+    now = datetime.now(timezone.utc)
+    for sym, last_time in _last_trade_time.items():
+        elapsed_min = round((now - last_time).total_seconds() / 60, 1)
+        remaining   = max(0.0, round(TRADE_COOLDOWN_MINUTES - elapsed_min, 1))
+        cooldown_status[sym] = {
+            "elapsed_min": elapsed_min,
+            "remaining_min": remaining,
+            "in_cooldown": remaining > 0,
+        }
+
+    return {
+        "dry_run":              DRY_RUN,
+        "paper_account_equity": PAPER_ACCOUNT_EQUITY,
+        "trade_watchlist":      TRADE_WATCHLIST,
+        "regime_symbols":       sorted(REGIME_SYMBOLS),
+        "alpaca_positions":     alpaca_positions,
+        "journal_open_trades":  open_paper,
+        "trade_cooldowns":      cooldown_status,
+        "observe_only_mode":    _observe_only_mode,
+        "api_failure_count":    _api_failure_count,
+        "session_start_utc":    _session_start.isoformat(),
+    }
+
+
+@app.get("/daily-report")
+def daily_report():
+    """
+    Full session report: config, equity, open positions, P&L, cycle counts.
+    Run this after market close or at any time for a snapshot.
+    """
+    from collections import Counter
+
+    # Account equity
+    alpaca_equity = None
+    buying_power  = None
+    try:
+        acct = requests.get(f"{BASE_URL}/v2/account", headers=_headers(), timeout=10).json()
+        alpaca_equity = acct.get("equity")
+        buying_power  = acct.get("buying_power")
+    except Exception:
+        pass
+
+    # Signal + entry breakdown from in-memory trade log
+    total_logged   = len(trade_log)
+    signal_counts  = dict(Counter(e.get("signal") for e in trade_log))
+    blocked_counts = dict(Counter(
+        e.get("blocked_by") for e in trade_log if e.get("blocked_by")
+    ))
+    entered_count  = sum(1 for e in trade_log if e.get("new_entry_opened"))
+    exited_count   = sum(
+        1 for e in trade_log
+        if e.get("signal") == "SELL" and (e.get("starting_qty") or 0) > 0
+    )
+    error_count    = sum(1 for e in trade_log if e.get("signal") == "ERROR")
+
+    # Setup grade breakdown
+    ap_count   = sum(1 for e in trade_log if e.get("grade") == "A+")
+    a_count    = sum(1 for e in trade_log if e.get("grade") == "A")
+    b_count    = sum(1 for e in trade_log if e.get("grade") == "B")
+    c_count    = sum(1 for e in trade_log if e.get("grade") == "C" and e.get("score") is not None)
+    scores_all = [e["score"] for e in trade_log if e.get("score") is not None]
+    avg_score  = round(sum(scores_all) / len(scores_all), 1) if scores_all else None
+
+    # Skipped-by-reason breakdown (from blocked setups)
+    skipped_counts = dict(Counter(
+        e.get("blocked_by") for e in trade_log
+        if (e.get("decision_summary") or "").startswith("SKIP:") and not e.get("new_entry_opened")
+    ))
+
+    # Open positions from journal
+    open_trades = journal.get_open_paper_positions()
+
+    # Performance from closed trades
+    perf = {}
+    try:
+        perf = journal.query_performance_summary()
+    except Exception:
+        pass
+
+    return {
+        "report_time_utc":   datetime.now(timezone.utc).isoformat(),
+        "session_start_utc": _session_start.isoformat(),
+        "config": {
+            "dry_run":              DRY_RUN,
+            "paper_account_equity": PAPER_ACCOUNT_EQUITY,
+            "max_allocation_pct":   MAX_ALLOCATION_PCT,
+            "risk_per_trade_pct":   RISK_PER_TRADE_PCT,
+            "stop_loss_pct":        STOP_LOSS_PCT,
+            "take_profit_pct":      TAKE_PROFIT_PCT,
+            "max_open_positions":   MAX_OPEN_POSITIONS,
+            "daily_loss_limit_pct": DAILY_LOSS_LIMIT_PCT,
+            "trade_cooldown_min":   TRADE_COOLDOWN_MINUTES,
+            "require_spy_bullish":  REQUIRE_SPY_BULLISH,
+            "min_entry_score":      MIN_ENTRY_SCORE,
+            "allow_b_setup_entries": ALLOW_B_SETUP_ENTRIES,
+            "watchlist":            TRADE_WATCHLIST,
+        },
+        "account": {
+            "alpaca_equity":           alpaca_equity,
+            "buying_power":            buying_power,
+            "effective_sizing_equity": PAPER_ACCOUNT_EQUITY if DRY_RUN else alpaca_equity,
+        },
+        "cycle_summary": {
+            "total_logged":  total_logged,
+            "signal_counts": signal_counts,
+            "entered":       entered_count,
+            "exited":        exited_count,
+            "blocked":       blocked_counts,
+            "skipped":       skipped_counts,
+            "errors":        error_count,
+        },
+        "setup_grades": {
+            "A+":       ap_count,
+            "A":        a_count,
+            "B":        b_count,
+            "C":        c_count,
+            "avg_score": avg_score,
+        },
+        "open_positions": open_trades,
+        "performance":    perf,
+    }
+
+
+@app.get("/affordability")
+def affordability():
+    """
+    Show affordability for every trade watchlist symbol at current equity.
+    Returns price, shares purchasable at MAX_ALLOCATION_PCT, and whether ≥1 share fits.
+    Useful before market open to confirm the watchlist is viable.
+    """
+    equity    = PAPER_ACCOUNT_EQUITY  # always simulated in dry-run
+    max_alloc = equity * MAX_ALLOCATION_PCT
+    results   = []
+    for sym in TRADE_WATCHLIST:
+        try:
+            df = _fetch_bars(sym, timeframe="1Day", days=5, limit=5)
+            if df.empty:
+                results.append({
+                    "symbol": sym, "affordable": False,
+                    "error": "No price data available",
+                })
+                continue
+            price = float(df.iloc[-1]["c"])
+            shares = int(max_alloc / price) if price > 0 else 0
+            results.append({
+                "symbol":          sym,
+                "price":           round(price, 2),
+                "max_alloc_usd":   round(max_alloc, 2),
+                "shares_possible": shares,
+                "affordable":      shares >= 1,
+                "pct_of_equity":   round(price / equity * 100, 1) if equity > 0 else None,
+                "decision":        "OK" if shares >= 1 else "SKIP — unaffordable at current price",
+            })
+        except Exception as exc:
+            results.append({"symbol": sym, "affordable": False, "error": str(exc)})
+
+    affordable_count = sum(1 for r in results if r.get("affordable"))
+    return {
+        "equity":            equity,
+        "max_alloc_usd":     round(max_alloc, 2),
+        "alloc_pct":         MAX_ALLOCATION_PCT,
+        "affordable_count":  affordable_count,
+        "total_symbols":     len(TRADE_WATCHLIST),
+        "symbols":           results,
+    }
+
+
+@app.get("/readiness-check")
+def readiness_check():
+    """
+    Live-trading readiness gate. All checks must pass before setting DRY_RUN=false.
+    Run this after ≥10 days of paper trading before considering a live transition.
+    """
+    checks = []
+    all_passed = True
+
+    def _chk(name: str, passed: bool, reason: str):
+        nonlocal all_passed
+        if not passed:
+            all_passed = False
+        checks.append({"check": name, "passed": passed, "reason": reason})
+
+    # 1. DRY_RUN must still be true (user controls the live switch manually)
+    _chk("dry_run_guard",
+         DRY_RUN,
+         "DRY_RUN=true ✓ — system is in safe paper mode"
+         if DRY_RUN
+         else "WARNING: DRY_RUN=false — real orders will be submitted if you start the bot")
+
+    # 2. ALLOW_LIVE_TRADING must be false (default safe state)
+    allow_live = os.getenv("ALLOW_LIVE_TRADING", "false").lower() == "true"
+    _chk("live_trading_locked",
+         not allow_live,
+         "ALLOW_LIVE_TRADING=false ✓ — live-money lock is engaged"
+         if not allow_live
+         else "WARNING: ALLOW_LIVE_TRADING=true — live gate is UNLOCKED")
+
+    # 3. Minimum 10 dry-run session days logged
+    try:
+        with journal._conn() as con:
+            distinct_days = con.execute(
+                "SELECT COUNT(DISTINCT DATE(timestamp)) FROM trade_events"
+            ).fetchone()[0]
+    except Exception:
+        distinct_days = 0
+    MIN_SESSIONS = 10
+    _chk("min_sessions",
+         distinct_days >= MIN_SESSIONS,
+         f"{distinct_days} session day(s) logged (need ≥{MIN_SESSIONS})"
+         + (" ✓" if distinct_days >= MIN_SESSIONS else " — keep running dry-run sessions"))
+
+    # 4. No ERROR signals in last 5 days
+    try:
+        with journal._conn() as con:
+            recent_errors = con.execute(
+                "SELECT COUNT(*) FROM trade_events WHERE signal='ERROR' "
+                "AND timestamp >= datetime('now', '-5 days')"
+            ).fetchone()[0]
+    except Exception:
+        recent_errors = 999
+    _chk("no_recent_errors",
+         recent_errors == 0,
+         "No ERROR signals in last 5 days ✓"
+         if recent_errors == 0
+         else f"{recent_errors} ERROR signal(s) in last 5 days — investigate before going live")
+
+    # 5. No qty=0 journal entries
+    try:
+        with journal._conn() as con:
+            qty_zero = con.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE qty=0 OR qty IS NULL"
+            ).fetchone()[0]
+    except Exception:
+        qty_zero = 999
+    _chk("no_qty_zero",
+         qty_zero == 0,
+         "No qty=0 journal entries ✓"
+         if qty_zero == 0
+         else f"{qty_zero} qty=0 entry(s) found — sizing guard may be broken")
+
+    # 6. Daily loss limit has been triggered at least once (proves it works)
+    try:
+        with journal._conn() as con:
+            dll_count = con.execute(
+                "SELECT COUNT(*) FROM trade_events WHERE blocked_by='daily_loss_limit'"
+            ).fetchone()[0]
+    except Exception:
+        dll_count = 0
+    _chk("daily_loss_limit_tested",
+         dll_count > 0,
+         f"Daily loss limit triggered {dll_count} time(s) ✓"
+         if dll_count > 0
+         else "Daily loss limit never triggered — manually test by simulating a 3%+ equity drop")
+
+    # 7. Stop-loss exits observed (proves exit logic works)
+    try:
+        with journal._conn() as con:
+            sl_exits = con.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE exit_reason LIKE '%stop%'"
+            ).fetchone()[0]
+    except Exception:
+        sl_exits = 0
+    _chk("stop_loss_observed",
+         sl_exits > 0,
+         f"Stop-loss exits observed {sl_exits} time(s) ✓"
+         if sl_exits > 0
+         else "No stop-loss exits observed — run /backtest/{symbol} to validate stop logic")
+
+    # 8. Expectancy is not deeply negative
+    perf = {}
+    try:
+        perf = journal.query_performance_summary()
+    except Exception:
+        pass
+    if "expectancy" in perf:
+        exp = float(perf["expectancy"])
+        _chk("expectancy_acceptable",
+             exp >= -10.0,
+             f"Expectancy=${exp:.4f} ✓" if exp >= -10.0
+             else f"Expectancy=${exp:.4f} — too negative; review strategy before going live")
+    else:
+        _chk("expectancy_acceptable",
+             False,
+             "Not enough closed trades to compute expectancy (run /backtest/{symbol})")
+
+    # 9. Max drawdown within safe limit ($150 = 15% of $1k account)
+    if "max_drawdown" in perf:
+        max_dd = float(perf["max_drawdown"])
+        DD_LIMIT = 150.0
+        _chk("max_drawdown_safe",
+             max_dd <= DD_LIMIT,
+             f"Max drawdown=${max_dd:.2f} ≤ ${DD_LIMIT:.2f} ✓"
+             if max_dd <= DD_LIMIT
+             else f"Max drawdown=${max_dd:.2f} exceeds ${DD_LIMIT:.2f} limit")
+
+    # 10. Win rate above 35% (minimum viability)
+    if "win_rate" in perf:
+        wr = float(perf["win_rate"])
+        _chk("win_rate_viable",
+             wr >= 35.0,
+             f"Win rate={wr:.1f}% ✓" if wr >= 35.0
+             else f"Win rate={wr:.1f}% is below 35% minimum")
+
+    passed = sum(1 for c in checks if c["passed"])
+    total  = len(checks)
+
+    # Overall verdict — only ready if all hard checks pass AND still in dry-run
+    hard_failed = [c for c in checks if not c["passed"] and c["check"] not in
+                   ("dry_run_guard", "live_trading_locked")]
+    is_ready = len(hard_failed) == 0
+
+    return {
+        "ready_for_live":  is_ready and not DRY_RUN and allow_live,
+        "checks_passed":   passed,
+        "checks_total":    total,
+        "verdict": (
+            "ALL CHECKS PASSED — but DRY_RUN=false + ALLOW_LIVE_TRADING=true are still required to go live"
+            if is_ready
+            else f"NOT READY — {total - passed} check(s) failed. Resolve all issues first."
+        ),
+        "checks":          checks,
+        "performance":     perf,
     }
 
 
@@ -1845,7 +2414,7 @@ def positions_watchlist():
 def trade_watchlist():
     results         = []
     new_entry_taken = False  # Allow at most one new long entry per cycle
-    for symbol in WATCHLIST:
+    for symbol in TRADE_WATCHLIST:
         try:
             result = execute_trade(symbol, block_new_entry=new_entry_taken)
             if result.get("new_entry_opened"):
@@ -1863,6 +2432,9 @@ def trade_watchlist():
                 "blocked_by":        result.get("blocked_by"),
                 "stop_loss_price":   result.get("stop_loss_price"),
                 "take_profit_price": result.get("take_profit_price"),
+                "score":             result.get("score"),
+                "grade":             result.get("grade"),
+                "new_entry_opened":  result.get("new_entry_opened", False),
             })
         except Exception as e:
             results.append({"symbol": symbol, "error": str(e)})
@@ -1877,9 +2449,9 @@ def market_status():
 
 @app.get("/scan-watchlist")
 def scan_watchlist():
-    """V3: Full filtered signals (RSI, MACD, breakout, MTF) for each watchlist symbol."""
+    """V3: Full filtered signals (RSI, MACD, breakout, MTF) for each trade watchlist symbol."""
     results = []
-    for symbol in WATCHLIST:
+    for symbol in TRADE_WATCHLIST:
         try:
             data = get_signal(symbol)
             if "error" in data:
@@ -1923,7 +2495,7 @@ def scan_watchlist():
 @app.get("/backtest-watchlist")
 def backtest_watchlist():
     results = []
-    for symbol in WATCHLIST:
+    for symbol in TRADE_WATCHLIST:
         try:
             data = backtest(symbol)
             if "error" in data:

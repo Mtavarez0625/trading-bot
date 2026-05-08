@@ -17,8 +17,19 @@ SLEEP_RETRY_ERROR   = 60    # 1 minute — used after a transient API/network fa
 TIMEOUT_SECONDS     = 60
 
 EASTERN = ZoneInfo("America/New_York")
-WINDOW_START = dtime(9, 30)
-WINDOW_END = dtime(11, 30)
+
+def _parse_window_time(env_var: str, default: dtime) -> dtime:
+    raw = os.getenv(env_var, "").strip()
+    if raw:
+        try:
+            parts = raw.split(":")
+            return dtime(int(parts[0]), int(parts[1]))
+        except Exception:
+            pass
+    return default
+
+WINDOW_START = _parse_window_time("TRADING_WINDOW_START", dtime(9, 35))
+WINDOW_END   = _parse_window_time("TRADING_WINDOW_END",   dtime(11, 30))
 
 # ── Single-instance lock (PID file) ──────────────────────────────────────────
 _LOCK_FILE = os.path.join(os.path.dirname(__file__), "bot.pid")
@@ -119,19 +130,21 @@ def run_trade_cycle():
 
             # Tally cycle stats for the one-line summary
             scanned       = len(results)
-            buy_count     = sum(1 for r in results if r.get("signal") == "BUY")
+            signals       = sum(1 for r in results if r.get("signal") == "BUY")
             entered       = sum(1 for r in results if r.get("new_entry_opened"))
             errors        = sum(1 for r in results if r.get("signal") == "ERROR")
-            cooldown_skip = sum(1 for r in results if r.get("blocked_by") == "cooldown")
-            stale_skip    = sum(1 for r in results if r.get("blocked_by") == "stale_data")
-            market_skip   = sum(1 for r in results if "market closed" in (r.get("decision_summary") or "").lower())
             blocked_total = sum(1 for r in results if r.get("blocked_by"))
-            sell_count    = sum(1 for r in results if r.get("signal") == "SELL" and r.get("starting_qty", 0) > 0)
+            # exited: SELL with an actual position (no-position SELL is now HOLD — not counted)
+            exited        = sum(1 for r in results if r.get("signal") == "SELL" and r.get("starting_qty", 0) > 0)
+            # skipped: anything with a SKIP: decision and no entry opened
+            skipped       = sum(
+                1 for r in results
+                if (r.get("decision_summary") or "").startswith("SKIP:") and not r.get("new_entry_opened")
+            )
 
             log_line(
-                f"Cycle: {scanned} scanned | {buy_count} BUY | {entered} entered | "
-                f"{sell_count} exited | {blocked_total} blocked | {errors} errors | "
-                f"{cooldown_skip} cooldown | {stale_skip} stale | {market_skip} mkt-closed"
+                f"Cycle: {scanned} scanned | {signals} signals | {entered} entered | "
+                f"{skipped} skipped | {blocked_total} blocked | {exited} exited | {errors} errors"
             )
 
             # Per-symbol line (ERROR paths always printed; others condensed)
@@ -142,13 +155,16 @@ def run_trade_cycle():
                 blocked = item.get("blocked_by", "")
                 qty     = item.get("starting_qty", 0)
                 tier    = item.get("entry_tier", "")
-                tier_tag = f" [{tier}]" if tier else ""
+                score   = item.get("score")
+                grade   = item.get("grade", "")
+                tier_tag   = f" [{tier}]" if tier else ""
+                score_tag  = f" score={score}[{grade}]" if score is not None else ""
                 if sig == "ERROR" or item.get("error"):
                     log_line(f"  ERROR [{sym}] {summary}")
                 elif blocked:
-                    log_line(f"  [{sym}] {sig}{tier_tag} | SKIP({blocked}) | {summary} | qty={qty}")
+                    log_line(f"  [{sym}] {sig}{tier_tag}{score_tag} | SKIP({blocked}) | {summary} | qty={qty}")
                 else:
-                    log_line(f"  [{sym}] {sig}{tier_tag} | {summary} | qty={qty}")
+                    log_line(f"  [{sym}] {sig}{tier_tag}{score_tag} | {summary} | qty={qty}")
         except Exception:
             log_line(f"Trade cycle response (raw): {response.text}")
         response.raise_for_status()
@@ -182,9 +198,18 @@ if __name__ == "__main__":
                 sleep_seconds = SLEEP_RETRY_ERROR
 
             elif not market_open:
-                # API confirmed market is closed — safe to sleep the long interval.
-                log_line("SLEEP REASON: Market confirmed CLOSED by API — sleeping 30 min")
-                sleep_seconds = SLEEP_MARKET_CLOSED
+                # API confirmed market is closed.
+                # Between 9:00 and window start (9:35) poll every 60s to catch the open promptly.
+                et = get_eastern_time()
+                if dtime(9, 0) <= et < WINDOW_START:
+                    log_line(
+                        f"SLEEP REASON: Pre-market approach ({et.strftime('%H:%M')} ET, "
+                        f"window starts {WINDOW_START.strftime('%H:%M')}) — sleeping 60s"
+                    )
+                    sleep_seconds = 60
+                else:
+                    log_line("SLEEP REASON: Market confirmed CLOSED by API — sleeping 30 min")
+                    sleep_seconds = SLEEP_MARKET_CLOSED
 
             else:
                 # Market is confirmed open — now check the trading window.

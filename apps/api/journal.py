@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS trade_events (
     intraday_confirmed    INTEGER,
     intraday_reason       TEXT,
     spy_bullish           INTEGER,
-    spy_reason            TEXT
+    spy_reason            TEXT,
+    score                 INTEGER,
+    grade                 TEXT
 )
 """
 
@@ -74,6 +76,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     volume_confirmed      INTEGER,
     breakout_confirmed    INTEGER,
     intraday_confirmed    INTEGER,
+    entry_score           INTEGER,
+    entry_grade           TEXT,
     is_open               INTEGER DEFAULT 1
 )
 """
@@ -93,10 +97,24 @@ def _conn():
         con.close()
 
 
+def _migrate_db(con):
+    """Add columns introduced after the initial schema — safe to run on any existing DB."""
+    existing_events = {row[1] for row in con.execute("PRAGMA table_info(trade_events)")}
+    for col, typ in [("score", "INTEGER"), ("grade", "TEXT")]:
+        if col not in existing_events:
+            con.execute(f"ALTER TABLE trade_events ADD COLUMN {col} {typ}")
+
+    existing_paper = {row[1] for row in con.execute("PRAGMA table_info(paper_trades)")}
+    for col, typ in [("entry_score", "INTEGER"), ("entry_grade", "TEXT")]:
+        if col not in existing_paper:
+            con.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {typ}")
+
+
 def init_db():
     with _conn() as con:
         con.execute(_DDL_EVENTS)
         con.execute(_DDL_PAPER)
+        _migrate_db(con)
     print(f"[journal] DB ready at {DB_PATH}")
 
 
@@ -113,14 +131,16 @@ def log_event(event: dict):
         take_profit_price, trailing_stop_pct, dry_run,
         rsi, macd_line, macd_signal_line, macd_histogram, macd_histogram_rising,
         trend_strength, volume_confirmed, current_volume, vol_sma_20,
-        breakout_confirmed, intraday_confirmed, intraday_reason, spy_bullish, spy_reason
+        breakout_confirmed, intraday_confirmed, intraday_reason, spy_bullish, spy_reason,
+        score, grade
     ) VALUES (
         :timestamp, :symbol, :signal, :decision_summary, :signal_reason,
         :blocked_by, :entry_tier, :starting_qty, :entry_price, :stop_price,
         :take_profit_price, :trailing_stop_pct, :dry_run,
         :rsi, :macd_line, :macd_signal_line, :macd_histogram, :macd_histogram_rising,
         :trend_strength, :volume_confirmed, :current_volume, :vol_sma_20,
-        :breakout_confirmed, :intraday_confirmed, :intraday_reason, :spy_bullish, :spy_reason
+        :breakout_confirmed, :intraday_confirmed, :intraday_reason, :spy_bullish, :spy_reason,
+        :score, :grade
     )
     """
     try:
@@ -153,6 +173,8 @@ def log_event(event: dict):
                 "intraday_reason":       event.get("intraday_reason"),
                 "spy_bullish":           _bool_int(event.get("spy_bullish")),
                 "spy_reason":            event.get("spy_reason"),
+                "score":                 event.get("score"),
+                "grade":                 event.get("grade"),
             })
     except Exception as e:
         print(f"[journal] WARNING: failed to log event for {event.get('symbol')}: {e}")
@@ -184,13 +206,13 @@ def open_paper_trade(symbol: str, entry: dict):
         trailing_stop_pct, qty, slippage_pct,
         entry_tier, rsi, macd_line, macd_signal_line, macd_histogram,
         macd_histogram_rising, trend_strength, volume_confirmed,
-        breakout_confirmed, intraday_confirmed, is_open
+        breakout_confirmed, intraday_confirmed, entry_score, entry_grade, is_open
     ) VALUES (
         :symbol, :entry_timestamp, :entry_price, :stop_price, :take_profit_price,
         :trailing_stop_pct, :qty, :slippage_pct,
         :entry_tier, :rsi, :macd_line, :macd_signal_line, :macd_histogram,
         :macd_histogram_rising, :trend_strength, :volume_confirmed,
-        :breakout_confirmed, :intraday_confirmed, 1
+        :breakout_confirmed, :intraday_confirmed, :entry_score, :entry_grade, 1
     )
     """
     try:
@@ -214,6 +236,8 @@ def open_paper_trade(symbol: str, entry: dict):
                 "volume_confirmed":     _bool_int(entry.get("volume_confirmed")),
                 "breakout_confirmed":   _bool_int(entry.get("breakout_confirmed")),
                 "intraday_confirmed":   _bool_int(entry.get("intraday_confirmed")),
+                "entry_score":          entry.get("entry_score"),
+                "entry_grade":          entry.get("entry_grade"),
             })
     except Exception as e:
         print(f"[journal] WARNING: failed to open paper trade for {symbol}: {e}")

@@ -1,0 +1,381 @@
+/Users/ai-agent/trading-bot/bot/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-30 10:25:40 | INFO     | main                   | ============================================================
+2026-04-30 10:25:40 | INFO     | main                   | Trading Bot — Startup
+2026-04-30 10:25:40 | INFO     | main                   | Paper mode   : True
+2026-04-30 10:25:40 | INFO     | main                   | Dry run      : False
+2026-04-30 10:25:40 | WARNING  | main                   | *** DRY_RUN is FALSE — real paper orders WILL be submitted to Alpaca. *** Set DRY_RUN=true to evaluate signals without placing orders.
+2026-04-30 10:25:40 | INFO     | main                   | Equities     : ['AAPL', 'MSFT', 'NVDA', 'TSLA']
+2026-04-30 10:25:40 | INFO     | main                   | Index ETFs   : ['SPY', 'QQQ']
+2026-04-30 10:25:40 | INFO     | main                   | Commodities  : (none)
+2026-04-30 10:25:40 | INFO     | main                   | Watchlist    : 6 symbols → ['AAPL', 'MSFT', 'NVDA', 'TSLA', 'SPY', 'QQQ']
+2026-04-30 10:25:40 | INFO     | main                   | Window       : 09:40:00 – 11:30:00 ET
+2026-04-30 10:25:40 | INFO     | main                   | Risk/trade   : 1.0%
+2026-04-30 10:25:40 | INFO     | main                   | Stop loss    : 1.0%  |  Take profit: 2.0%
+2026-04-30 10:25:40 | INFO     | main                   | Max pos      : 3  |  Max trades/sym: 2  |  Daily loss stop: 5.0%
+2026-04-30 10:25:40 | INFO     | main                   | Max ETF group: 1  (correlated ETF group: ['SPY', 'QQQ'])
+2026-04-30 10:25:40 | INFO     | main                   | ============================================================
+2026-04-30 10:25:41 | INFO     | main                   | Account | Equity: $100223.49 | Buying Power: $160741.82 | Status: AccountStatus.ACTIVE
+2026-04-30 10:25:41 | INFO     | main                   | Account equity: $100223.49
+2026-04-30 10:25:41 | INFO     | data_service           | [SPY] Fetched 278 bars (latest: 2026-04-30 14:20:00+00:00).
+2026-04-30 10:25:41 | WARNING  | market_regime          | Market regime: BEARISH — SPY not bullish: RSI(48.5) not above 50.0
+2026-04-30 10:25:41 | WARNING  | main                   | Market regime: NOT BULLISH — no new entries this cycle. Reason: SPY not bullish: RSI(48.5) not above 50.0
+2026-04-30 10:25:41 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 10:30:41 | INFO     | main                   | Account equity: $100241.73
+2026-04-30 10:30:43 | INFO     | data_service           | [SPY] Fetched 279 bars (latest: 2026-04-30 14:25:00+00:00).
+2026-04-30 10:30:43 | WARNING  | market_regime          | Market regime: BEARISH — SPY not bullish: RSI(49.7) not above 50.0
+2026-04-30 10:30:43 | WARNING  | main                   | Market regime: NOT BULLISH — no new entries this cycle. Reason: SPY not bullish: RSI(49.7) not above 50.0
+2026-04-30 10:30:43 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 10:35:43 | INFO     | main                   | Account equity: $100220.15
+2026-04-30 10:35:43 | INFO     | data_service           | [SPY] Fetched 280 bars (latest: 2026-04-30 14:30:00+00:00).
+2026-04-30 10:35:43 | WARNING  | market_regime          | Market regime: BEARISH — SPY not bullish: RSI(47.4) not above 50.0
+2026-04-30 10:35:43 | WARNING  | main                   | Market regime: NOT BULLISH — no new entries this cycle. Reason: SPY not bullish: RSI(47.4) not above 50.0
+2026-04-30 10:35:43 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 10:40:44 | INFO     | main                   | Account equity: $100200.21
+2026-04-30 10:40:45 | INFO     | data_service           | [SPY] Fetched 281 bars (latest: 2026-04-30 14:35:00+00:00).
+2026-04-30 10:40:45 | WARNING  | market_regime          | Market regime: BEARISH — SPY not bullish: RSI(44.9) not above 50.0
+2026-04-30 10:40:45 | WARNING  | main                   | Market regime: NOT BULLISH — no new entries this cycle. Reason: SPY not bullish: RSI(44.9) not above 50.0
+2026-04-30 10:40:45 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 10:45:45 | INFO     | main                   | Account equity: $100260.65
+2026-04-30 10:45:48 | INFO     | data_service           | [SPY] Fetched 282 bars (latest: 2026-04-30 14:40:00+00:00).
+2026-04-30 10:45:48 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(712.08) > EMA50(711.72), RSI(51.3) > 50.0
+2026-04-30 10:45:48 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(712.08) > EMA50(711.72), RSI(51.3) > 50.0
+2026-04-30 10:45:48 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 10:45:48 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 10:45:49 | INFO     | data_service           | [AAPL] Fetched 259 bars (latest: 2026-04-30 14:40:00+00:00).
+2026-04-30 10:45:49 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=True volume=False | volume(16016) not above avg(23490)
+2026-04-30 10:45:49 | INFO     | main                   | [AAPL] Indicators | EMA20=270.85 EMA50=270.39 RSI=57.2 vol=16016 vol_avg=23490
+2026-04-30 10:45:49 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 10:45:49 | INFO     | data_service           | [MSFT] Fetched 268 bars (latest: 2026-04-30 14:40:00+00:00).
+2026-04-30 10:45:49 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(407.17) not above EMA50(413.75); RSI(39.63) not above 55.0; volume(20536) not above avg(36901)
+2026-04-30 10:45:49 | INFO     | main                   | [MSFT] Indicators | EMA20=407.17 EMA50=413.75 RSI=39.6 vol=20536 vol_avg=36901
+2026-04-30 10:45:49 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 10:45:50 | INFO     | data_service           | [NVDA] Fetched 284 bars (latest: 2026-04-30 14:40:00+00:00).
+2026-04-30 10:45:50 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=True | EMA20(203.69) not above EMA50(206.39); RSI(30.27) not above 55.0
+2026-04-30 10:45:50 | INFO     | main                   | [NVDA] Indicators | EMA20=203.69 EMA50=206.39 RSI=30.3 vol=180471 vol_avg=134875
+2026-04-30 10:45:50 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 10:45:51 | INFO     | data_service           | [TSLA] Fetched 273 bars (latest: 2026-04-30 14:40:00+00:00).
+2026-04-30 10:45:51 | INFO     | main                   | [TSLA] Signal=False | trend=False rsi=True volume=True | EMA20(371.25) not above EMA50(371.85)
+2026-04-30 10:45:51 | INFO     | main                   | [TSLA] Indicators | EMA20=371.25 EMA50=371.85 RSI=55.9 vol=9219 vol_avg=7632
+2026-04-30 10:45:51 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 10:45:51 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 10:45:51 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 10:45:51 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 10:45:51 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 10:50:51 | INFO     | main                   | Account equity: $100301.43
+2026-04-30 10:50:53 | INFO     | data_service           | [SPY] Fetched 283 bars (latest: 2026-04-30 14:45:00+00:00).
+2026-04-30 10:50:53 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(712.15) > EMA50(711.77), RSI(54.9) > 50.0
+2026-04-30 10:50:53 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(712.15) > EMA50(711.77), RSI(54.9) > 50.0
+2026-04-30 10:50:53 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 10:50:53 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 10:50:53 | INFO     | data_service           | [AAPL] Fetched 260 bars (latest: 2026-04-30 14:45:00+00:00).
+2026-04-30 10:50:53 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=False volume=False | RSI(52.68) not above 55.0; volume(20467) not above avg(23402)
+2026-04-30 10:50:53 | INFO     | main                   | [AAPL] Indicators | EMA20=270.87 EMA50=270.41 RSI=52.7 vol=20467 vol_avg=23402
+2026-04-30 10:50:53 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 10:50:53 | INFO     | data_service           | [MSFT] Fetched 269 bars (latest: 2026-04-30 14:45:00+00:00).
+2026-04-30 10:50:53 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(406.97) not above EMA50(413.41); RSI(41.97) not above 55.0; volume(25878) not above avg(38185)
+2026-04-30 10:50:53 | INFO     | main                   | [MSFT] Indicators | EMA20=406.97 EMA50=413.41 RSI=42.0 vol=25878 vol_avg=38185
+2026-04-30 10:50:53 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 10:50:54 | INFO     | data_service           | [NVDA] Fetched 285 bars (latest: 2026-04-30 14:45:00+00:00).
+2026-04-30 10:50:54 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(203.46) not above EMA50(206.19); RSI(34.37) not above 55.0; volume(69604) not above avg(138327)
+2026-04-30 10:50:54 | INFO     | main                   | [NVDA] Indicators | EMA20=203.46 EMA50=206.19 RSI=34.4 vol=69604 vol_avg=138327
+2026-04-30 10:50:54 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 10:50:55 | INFO     | data_service           | [TSLA] Fetched 274 bars (latest: 2026-04-30 14:45:00+00:00).
+2026-04-30 10:50:55 | INFO     | main                   | [TSLA] Signal=False | trend=False rsi=True volume=False | EMA20(371.56) not above EMA50(371.96); volume(5521) not above avg(7900)
+2026-04-30 10:50:55 | INFO     | main                   | [TSLA] Indicators | EMA20=371.56 EMA50=371.96 RSI=61.7 vol=5521 vol_avg=7900
+2026-04-30 10:50:55 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 10:50:55 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 10:50:55 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 10:50:55 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 10:50:55 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 10:55:55 | INFO     | main                   | Account equity: $100372.17
+2026-04-30 10:55:55 | INFO     | data_service           | [SPY] Fetched 284 bars (latest: 2026-04-30 14:50:00+00:00).
+2026-04-30 10:55:55 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(712.30) > EMA50(711.84), RSI(59.6) > 50.0
+2026-04-30 10:55:55 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(712.30) > EMA50(711.84), RSI(59.6) > 50.0
+2026-04-30 10:55:55 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 10:55:55 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 10:55:55 | INFO     | data_service           | [AAPL] Fetched 261 bars (latest: 2026-04-30 14:50:00+00:00).
+2026-04-30 10:55:55 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=False volume=False | RSI(54.81) not above 55.0; volume(18646) not above avg(22089)
+2026-04-30 10:55:55 | INFO     | main                   | [AAPL] Indicators | EMA20=270.91 EMA50=270.45 RSI=54.8 vol=18646 vol_avg=22089
+2026-04-30 10:55:55 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 10:55:55 | INFO     | data_service           | [MSFT] Fetched 270 bars (latest: 2026-04-30 14:50:00+00:00).
+2026-04-30 10:55:55 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(406.86) not above EMA50(413.11); RSI(43.68) not above 55.0; volume(36434) not above avg(39999)
+2026-04-30 10:55:55 | INFO     | main                   | [MSFT] Indicators | EMA20=406.86 EMA50=413.11 RSI=43.7 vol=36434 vol_avg=39999
+2026-04-30 10:55:55 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 10:55:56 | INFO     | data_service           | [NVDA] Fetched 286 bars (latest: 2026-04-30 14:50:00+00:00).
+2026-04-30 10:55:56 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(203.29) not above EMA50(206.01); RSI(36.97) not above 55.0; volume(110237) not above avg(143832)
+2026-04-30 10:55:56 | INFO     | main                   | [NVDA] Indicators | EMA20=203.29 EMA50=206.01 RSI=37.0 vol=110237 vol_avg=143832
+2026-04-30 10:55:56 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 10:55:56 | INFO     | data_service           | [TSLA] Fetched 275 bars (latest: 2026-04-30 14:50:00+00:00).
+2026-04-30 10:55:56 | INFO     | main                   | [TSLA] Signal=False | trend=False rsi=True volume=False | EMA20(371.88) not above EMA50(372.07); volume(5463) not above avg(8157)
+2026-04-30 10:55:56 | INFO     | main                   | [TSLA] Indicators | EMA20=371.88 EMA50=372.07 RSI=63.0 vol=5463 vol_avg=8157
+2026-04-30 10:55:56 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 10:55:56 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 10:55:56 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 10:55:56 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 10:55:56 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:00:56 | INFO     | main                   | Account equity: $100400.92
+2026-04-30 11:00:58 | INFO     | data_service           | [SPY] Fetched 285 bars (latest: 2026-04-30 14:55:00+00:00).
+2026-04-30 11:00:58 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(712.45) > EMA50(711.92), RSI(60.6) > 50.0
+2026-04-30 11:00:58 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(712.45) > EMA50(711.92), RSI(60.6) > 50.0
+2026-04-30 11:00:58 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 11:00:58 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 11:00:59 | INFO     | data_service           | [AAPL] Fetched 262 bars (latest: 2026-04-30 14:55:00+00:00).
+2026-04-30 11:00:59 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=False volume=False | RSI(51.01) not above 55.0; volume(14573) not above avg(22811)
+2026-04-30 11:00:59 | INFO     | main                   | [AAPL] Indicators | EMA20=270.90 EMA50=270.46 RSI=51.0 vol=14573 vol_avg=22811
+2026-04-30 11:00:59 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 11:00:59 | INFO     | data_service           | [MSFT] Fetched 271 bars (latest: 2026-04-30 14:55:00+00:00).
+2026-04-30 11:00:59 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(406.80) not above EMA50(412.84); RSI(44.76) not above 55.0; volume(36847) not above avg(41839)
+2026-04-30 11:00:59 | INFO     | main                   | [MSFT] Indicators | EMA20=406.80 EMA50=412.84 RSI=44.8 vol=36847 vol_avg=41839
+2026-04-30 11:00:59 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 11:01:00 | INFO     | data_service           | [NVDA] Fetched 287 bars (latest: 2026-04-30 14:55:00+00:00).
+2026-04-30 11:01:00 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(203.15) not above EMA50(205.85); RSI(37.56) not above 55.0; volume(84368) not above avg(148029)
+2026-04-30 11:01:00 | INFO     | main                   | [NVDA] Indicators | EMA20=203.15 EMA50=205.85 RSI=37.6 vol=84368 vol_avg=148029
+2026-04-30 11:01:00 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 11:01:02 | INFO     | data_service           | [TSLA] Fetched 277 bars (latest: 2026-04-30 15:00:00+00:00).
+2026-04-30 11:01:02 | INFO     | main                   | [TSLA] Signal=False | trend=True rsi=True volume=False | volume(1585) not above avg(8611)
+2026-04-30 11:01:02 | INFO     | main                   | [TSLA] Indicators | EMA20=372.68 EMA50=372.40 RSI=67.8 vol=1585 vol_avg=8611
+2026-04-30 11:01:02 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 11:01:02 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 11:01:02 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 11:01:02 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 11:01:02 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:06:02 | INFO     | main                   | Account equity: $100381.93
+2026-04-30 11:06:04 | INFO     | data_service           | [SPY] Fetched 287 bars (latest: 2026-04-30 15:05:00+00:00).
+2026-04-30 11:06:04 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(712.70) > EMA50(712.07), RSI(58.5) > 50.0
+2026-04-30 11:06:04 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(712.70) > EMA50(712.07), RSI(58.5) > 50.0
+2026-04-30 11:06:04 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 11:06:04 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 11:06:05 | INFO     | data_service           | [AAPL] Fetched 264 bars (latest: 2026-04-30 15:05:00+00:00).
+2026-04-30 11:06:05 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=False volume=False | RSI(52.57) not above 55.0; volume(4478) not above avg(23748)
+2026-04-30 11:06:05 | INFO     | main                   | [AAPL] Indicators | EMA20=270.94 EMA50=270.51 RSI=52.6 vol=4478 vol_avg=23748
+2026-04-30 11:06:05 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 11:06:05 | INFO     | data_service           | [MSFT] Fetched 273 bars (latest: 2026-04-30 15:05:00+00:00).
+2026-04-30 11:06:05 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(406.53) not above EMA50(412.26); RSI(42.51) not above 55.0; volume(3465) not above avg(43492)
+2026-04-30 11:06:05 | INFO     | main                   | [MSFT] Indicators | EMA20=406.53 EMA50=412.26 RSI=42.5 vol=3465 vol_avg=43492
+2026-04-30 11:06:05 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 11:06:06 | INFO     | data_service           | [NVDA] Fetched 289 bars (latest: 2026-04-30 15:05:00+00:00).
+2026-04-30 11:06:06 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(202.90) not above EMA50(205.54); RSI(37.98) not above 55.0; volume(8467) not above avg(153916)
+2026-04-30 11:06:06 | INFO     | main                   | [NVDA] Indicators | EMA20=202.90 EMA50=205.54 RSI=38.0 vol=8467 vol_avg=153916
+2026-04-30 11:06:06 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 11:06:07 | INFO     | data_service           | [TSLA] Fetched 278 bars (latest: 2026-04-30 15:05:00+00:00).
+2026-04-30 11:06:07 | INFO     | main                   | [TSLA] Signal=False | trend=True rsi=True volume=False | volume(988) not above avg(9357)
+2026-04-30 11:06:07 | INFO     | main                   | [TSLA] Indicators | EMA20=373.19 EMA50=372.62 RSI=66.5 vol=988 vol_avg=9357
+2026-04-30 11:06:07 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 11:06:07 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 11:06:07 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 11:06:07 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 11:06:07 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:11:07 | INFO     | main                   | Account equity: $100424.97
+2026-04-30 11:11:11 | INFO     | data_service           | [SPY] Fetched 288 bars (latest: 2026-04-30 15:10:00+00:00).
+2026-04-30 11:11:11 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(712.92) > EMA50(712.19), RSI(63.3) > 50.0
+2026-04-30 11:11:11 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(712.92) > EMA50(712.19), RSI(63.3) > 50.0
+2026-04-30 11:11:11 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 11:11:11 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 11:11:11 | INFO     | data_service           | [AAPL] Fetched 265 bars (latest: 2026-04-30 15:10:00+00:00).
+2026-04-30 11:11:11 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=False volume=False | RSI(54.21) not above 55.0; volume(3778) not above avg(22991)
+2026-04-30 11:11:11 | INFO     | main                   | [AAPL] Indicators | EMA20=270.99 EMA50=270.55 RSI=54.2 vol=3778 vol_avg=22991
+2026-04-30 11:11:11 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 11:11:11 | INFO     | data_service           | [MSFT] Fetched 274 bars (latest: 2026-04-30 15:10:00+00:00).
+2026-04-30 11:11:11 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(406.39) not above EMA50(411.98); RSI(42.14) not above 55.0; volume(4336) not above avg(37781)
+2026-04-30 11:11:11 | INFO     | main                   | [MSFT] Indicators | EMA20=406.39 EMA50=411.98 RSI=42.1 vol=4336 vol_avg=37781
+2026-04-30 11:11:11 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 11:11:12 | INFO     | data_service           | [NVDA] Fetched 290 bars (latest: 2026-04-30 15:10:00+00:00).
+2026-04-30 11:11:12 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(202.88) not above EMA50(205.42); RSI(40.77) not above 55.0; volume(17270) not above avg(151030)
+2026-04-30 11:11:12 | INFO     | main                   | [NVDA] Indicators | EMA20=202.88 EMA50=205.42 RSI=40.8 vol=17270 vol_avg=151030
+2026-04-30 11:11:12 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 11:11:13 | INFO     | data_service           | [TSLA] Fetched 279 bars (latest: 2026-04-30 15:10:00+00:00).
+2026-04-30 11:11:13 | INFO     | main                   | [TSLA] Signal=False | trend=True rsi=True volume=False | volume(1153) not above avg(8840)
+2026-04-30 11:11:13 | INFO     | main                   | [TSLA] Indicators | EMA20=373.63 EMA50=372.83 RSI=68.6 vol=1153 vol_avg=8840
+2026-04-30 11:11:13 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 11:11:13 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 11:11:13 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 11:11:13 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 11:11:13 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:16:13 | INFO     | main                   | Account equity: $100412.37
+2026-04-30 11:16:15 | INFO     | data_service           | [SPY] Fetched 289 bars (latest: 2026-04-30 15:15:00+00:00).
+2026-04-30 11:16:15 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(713.05) > EMA50(712.27), RSI(62.5) > 50.0
+2026-04-30 11:16:15 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(713.05) > EMA50(712.27), RSI(62.5) > 50.0
+2026-04-30 11:16:15 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 11:16:15 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 11:16:16 | INFO     | data_service           | [AAPL] Fetched 266 bars (latest: 2026-04-30 15:15:00+00:00).
+2026-04-30 11:16:16 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=True volume=False | volume(3963) not above avg(21701)
+2026-04-30 11:16:16 | INFO     | main                   | [AAPL] Indicators | EMA20=271.02 EMA50=270.58 RSI=55.3 vol=3963 vol_avg=21701
+2026-04-30 11:16:16 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 11:16:16 | INFO     | data_service           | [MSFT] Fetched 275 bars (latest: 2026-04-30 15:15:00+00:00).
+2026-04-30 11:16:16 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(406.23) not above EMA50(411.69); RSI(42.53) not above 55.0; volume(2850) not above avg(35263)
+2026-04-30 11:16:16 | INFO     | main                   | [MSFT] Indicators | EMA20=406.23 EMA50=411.69 RSI=42.5 vol=2850 vol_avg=35263
+2026-04-30 11:16:16 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 11:16:16 | INFO     | data_service           | [NVDA] Fetched 291 bars (latest: 2026-04-30 15:15:00+00:00).
+2026-04-30 11:16:16 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(202.75) not above EMA50(205.27); RSI(39.21) not above 55.0; volume(7565) not above avg(147340)
+2026-04-30 11:16:16 | INFO     | main                   | [NVDA] Indicators | EMA20=202.75 EMA50=205.27 RSI=39.2 vol=7565 vol_avg=147340
+2026-04-30 11:16:16 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 11:16:17 | INFO     | data_service           | [TSLA] Fetched 280 bars (latest: 2026-04-30 15:15:00+00:00).
+2026-04-30 11:16:17 | INFO     | main                   | [TSLA] Signal=False | trend=True rsi=True volume=False | volume(1694) not above avg(8688)
+2026-04-30 11:16:17 | INFO     | main                   | [TSLA] Indicators | EMA20=373.83 EMA50=372.94 RSI=64.1 vol=1694 vol_avg=8688
+2026-04-30 11:16:17 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 11:16:17 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 11:16:17 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 11:16:17 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 11:16:17 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:21:17 | INFO     | main                   | Account equity: $100411.63
+2026-04-30 11:21:17 | INFO     | data_service           | [SPY] Fetched 290 bars (latest: 2026-04-30 15:20:00+00:00).
+2026-04-30 11:21:17 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(713.15) > EMA50(712.34), RSI(61.2) > 50.0
+2026-04-30 11:21:17 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(713.15) > EMA50(712.34), RSI(61.2) > 50.0
+2026-04-30 11:21:17 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 11:21:17 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 11:21:17 | INFO     | data_service           | [AAPL] Fetched 267 bars (latest: 2026-04-30 15:20:00+00:00).
+2026-04-30 11:21:17 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=False volume=False | RSI(54.55) not above 55.0; volume(5148) not above avg(21875)
+2026-04-30 11:21:17 | INFO     | main                   | [AAPL] Indicators | EMA20=271.03 EMA50=270.60 RSI=54.6 vol=5148 vol_avg=21875
+2026-04-30 11:21:17 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 11:21:17 | INFO     | data_service           | [MSFT] Fetched 276 bars (latest: 2026-04-30 15:20:00+00:00).
+2026-04-30 11:21:17 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(405.98) not above EMA50(411.37); RSI(40.41) not above 55.0; volume(5683) not above avg(34303)
+2026-04-30 11:21:17 | INFO     | main                   | [MSFT] Indicators | EMA20=405.98 EMA50=411.37 RSI=40.4 vol=5683 vol_avg=34303
+2026-04-30 11:21:17 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 11:21:17 | INFO     | data_service           | [NVDA] Fetched 292 bars (latest: 2026-04-30 15:20:00+00:00).
+2026-04-30 11:21:18 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(202.67) not above EMA50(205.14); RSI(39.83) not above 55.0; volume(8611) not above avg(141637)
+2026-04-30 11:21:18 | INFO     | main                   | [NVDA] Indicators | EMA20=202.67 EMA50=205.14 RSI=39.8 vol=8611 vol_avg=141637
+2026-04-30 11:21:18 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 11:21:18 | INFO     | data_service           | [TSLA] Fetched 281 bars (latest: 2026-04-30 15:20:00+00:00).
+2026-04-30 11:21:18 | INFO     | main                   | [TSLA] Signal=False | trend=True rsi=True volume=False | volume(1312) not above avg(8428)
+2026-04-30 11:21:18 | INFO     | main                   | [TSLA] Indicators | EMA20=374.14 EMA50=373.10 RSI=64.2 vol=1312 vol_avg=8428
+2026-04-30 11:21:18 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 11:21:18 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 11:21:18 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 11:21:18 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 11:21:18 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:26:18 | INFO     | main                   | Account equity: $100421.09
+2026-04-30 11:26:18 | INFO     | data_service           | [SPY] Fetched 291 bars (latest: 2026-04-30 15:25:00+00:00).
+2026-04-30 11:26:18 | INFO     | market_regime          | Market regime: BULLISH — SPY EMA20(713.27) > EMA50(712.42), RSI(63.1) > 50.0
+2026-04-30 11:26:18 | INFO     | main                   | Market regime: BULLISH — SPY EMA20(713.27) > EMA50(712.42), RSI(63.1) > 50.0
+2026-04-30 11:26:18 | INFO     | main                   | Open positions: 2/3 | Watchlist: 6 symbols
+2026-04-30 11:26:18 | INFO     | main                   | --- AAPL [equity] ---
+2026-04-30 11:26:18 | INFO     | data_service           | [AAPL] Fetched 268 bars (latest: 2026-04-30 15:25:00+00:00).
+2026-04-30 11:26:18 | INFO     | main                   | [AAPL] Signal=False | trend=True rsi=True volume=False | volume(3218) not above avg(21965)
+2026-04-30 11:26:18 | INFO     | main                   | [AAPL] Indicators | EMA20=271.08 EMA50=270.64 RSI=56.2 vol=3218 vol_avg=21965
+2026-04-30 11:26:18 | INFO     | main                   | --- MSFT [equity] ---
+2026-04-30 11:26:18 | INFO     | data_service           | [MSFT] Fetched 277 bars (latest: 2026-04-30 15:25:00+00:00).
+2026-04-30 11:26:18 | INFO     | main                   | [MSFT] Signal=False | trend=False rsi=False volume=False | EMA20(405.70) not above EMA50(411.05); RSI(38.68) not above 55.0; volume(4373) not above avg(32799)
+2026-04-30 11:26:18 | INFO     | main                   | [MSFT] Indicators | EMA20=405.70 EMA50=411.05 RSI=38.7 vol=4373 vol_avg=32799
+2026-04-30 11:26:18 | INFO     | main                   | --- NVDA [equity] ---
+2026-04-30 11:26:19 | INFO     | data_service           | [NVDA] Fetched 293 bars (latest: 2026-04-30 15:25:00+00:00).
+2026-04-30 11:26:19 | INFO     | main                   | [NVDA] Signal=False | trend=False rsi=False volume=False | EMA20(202.47) not above EMA50(204.96); RSI(36.23) not above 55.0; volume(19368) not above avg(140365)
+2026-04-30 11:26:19 | INFO     | main                   | [NVDA] Indicators | EMA20=202.47 EMA50=204.96 RSI=36.2 vol=19368 vol_avg=140365
+2026-04-30 11:26:19 | INFO     | main                   | --- TSLA [equity] ---
+2026-04-30 11:26:19 | INFO     | data_service           | [TSLA] Fetched 282 bars (latest: 2026-04-30 15:25:00+00:00).
+2026-04-30 11:26:19 | INFO     | main                   | [TSLA] Signal=False | trend=True rsi=True volume=False | volume(2277) not above avg(8441)
+2026-04-30 11:26:19 | INFO     | main                   | [TSLA] Indicators | EMA20=374.58 EMA50=373.32 RSI=68.4 vol=2277 vol_avg=8441
+2026-04-30 11:26:19 | INFO     | main                   | --- SPY [index_etf] ---
+2026-04-30 11:26:19 | INFO     | main                   | [SPY] Open position already exists. Skipping.
+2026-04-30 11:26:19 | INFO     | main                   | --- QQQ [index_etf] ---
+2026-04-30 11:26:19 | INFO     | main                   | [QQQ] Open position already exists. Skipping.
+2026-04-30 11:26:19 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:31:19 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 11:31:19 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:36:19 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 11:36:19 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:41:19 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 11:41:19 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:46:20 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 11:46:20 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:51:20 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 11:51:20 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 11:56:20 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 11:56:20 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:01:20 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:01:20 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:06:20 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:06:20 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:11:21 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:11:21 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:16:21 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:16:21 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:21:21 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:21:21 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:26:21 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:26:21 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:31:21 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:31:21 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:36:21 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:36:21 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:41:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:41:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:46:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:46:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:51:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:51:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 12:56:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 12:56:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:01:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:01:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:06:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:06:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:11:22 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:11:22 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:16:23 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:16:23 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:21:23 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:21:23 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:26:23 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:26:23 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:31:23 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:31:23 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:36:23 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:36:23 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:41:23 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:41:23 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:46:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:46:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:51:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:51:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 13:56:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 13:56:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:01:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:01:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:06:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:06:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:11:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:11:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:16:24 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:16:24 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:21:25 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:21:25 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:26:25 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:26:25 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:31:25 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:31:25 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:36:25 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:36:25 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:41:25 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:41:25 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:46:25 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:46:25 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:51:26 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:51:26 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 14:56:26 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 14:56:26 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:01:26 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:01:26 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:06:26 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:06:26 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:11:26 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:11:26 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:16:26 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:16:26 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:21:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:21:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:26:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:26:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:31:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:31:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:36:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:36:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:41:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:41:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:46:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:46:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:51:27 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:51:27 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 15:56:28 | INFO     | main                   | Outside entry window (09:40:00–11:30:00 ET). No new entries.
+2026-04-30 15:56:28 | INFO     | main                   | Next cycle in 300 seconds.
+2026-04-30 16:01:28 | INFO     | main                   | Market close fail-safe triggered. Shutting down bot.

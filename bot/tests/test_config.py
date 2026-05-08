@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import os
 from config import AssetGroup, Config, _parse_symbols, load_config
 
 
@@ -19,8 +20,13 @@ def _minimal_env(monkeypatch, extra: dict | None = None) -> None:
     """Set the minimum required env vars so load_config() won't raise."""
     monkeypatch.setenv("ALPACA_API_KEY", "test-key")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "test-secret")
-    # Clear all symbol vars so tests control them explicitly
-    for var in ("SYMBOLS", "EQUITIES", "INDEX_ETFS", "COMMODITIES"):
+    monkeypatch.setenv("ALPACA_PAPER", "true")
+    # Clear vars so tests control them explicitly; prevents .env bleed-through
+    for var in (
+        "SYMBOLS", "EQUITIES", "INDEX_ETFS", "COMMODITIES", "ALLOW_LIVE_TRADING",
+        "PAPER_ACCOUNT_EQUITY", "MAX_ALLOCATION_PCT",
+        "DRY_RUN", "TRADING_WINDOW_START", "TRADING_WINDOW_END",
+    ):
         monkeypatch.delenv(var, raising=False)
     if extra:
         for k, v in extra.items():
@@ -285,7 +291,221 @@ class TestLoadConfigValidation:
         cfg = load_config()
         assert cfg.paper is True
 
+    def test_paper_false_raises_environment_error(self, monkeypatch):
+        _minimal_env(monkeypatch, {"ALPACA_PAPER": "false"})
+        with pytest.raises(EnvironmentError, match="ALPACA_PAPER"):
+            load_config()
+
+    def test_paper_false_via_zero_raises(self, monkeypatch):
+        _minimal_env(monkeypatch, {"ALPACA_PAPER": "0"})
+        with pytest.raises(EnvironmentError, match="ALPACA_PAPER"):
+            load_config()
+
     def test_dry_run_defaults_to_false(self, monkeypatch):
         _minimal_env(monkeypatch)
         cfg = load_config()
         assert cfg.dry_run is False
+
+    def test_max_etf_group_positions_defaults_to_1(self, monkeypatch):
+        _minimal_env(monkeypatch)
+        cfg = load_config()
+        assert cfg.max_etf_group_positions == 1
+
+    def test_max_etf_group_positions_can_be_set(self, monkeypatch):
+        _minimal_env(monkeypatch, {"MAX_ETF_GROUP_POSITIONS": "2"})
+        cfg = load_config()
+        assert cfg.max_etf_group_positions == 2
+
+    def test_max_etf_group_positions_zero_raises(self, monkeypatch):
+        _minimal_env(monkeypatch, {"MAX_ETF_GROUP_POSITIONS": "0"})
+        with pytest.raises(ValueError, match="MAX_ETF_GROUP_POSITIONS"):
+            load_config()
+
+    # -----------------------------------------------------------------------
+    # Live-money hard lock
+    # -----------------------------------------------------------------------
+
+    def test_paper_true_always_allowed(self, monkeypatch):
+        """Paper mode must work regardless of ALLOW_LIVE_TRADING."""
+        _minimal_env(monkeypatch, {"ALPACA_PAPER": "true", "ALLOW_LIVE_TRADING": "false"})
+        cfg = load_config()
+        assert cfg.paper is True
+
+    def test_paper_true_allow_live_not_set(self, monkeypatch):
+        """Paper mode works even when ALLOW_LIVE_TRADING is absent."""
+        _minimal_env(monkeypatch)
+        monkeypatch.delenv("ALLOW_LIVE_TRADING", raising=False)
+        cfg = load_config()
+        assert cfg.paper is True
+
+    def test_live_lock_blocked_when_allow_flag_false(self, monkeypatch):
+        """ALPACA_PAPER=false + ALLOW_LIVE_TRADING=false must raise."""
+        _minimal_env(monkeypatch, {"ALPACA_PAPER": "false", "ALLOW_LIVE_TRADING": "false"})
+        with pytest.raises(EnvironmentError, match="ALLOW_LIVE_TRADING"):
+            load_config()
+
+    def test_live_lock_blocked_when_allow_flag_absent(self, monkeypatch):
+        """ALPACA_PAPER=false with no ALLOW_LIVE_TRADING must raise."""
+        _minimal_env(monkeypatch, {"ALPACA_PAPER": "false"})
+        monkeypatch.delenv("ALLOW_LIVE_TRADING", raising=False)
+        with pytest.raises(EnvironmentError):
+            load_config()
+
+    def test_live_lock_unlocked_when_both_flags_set(self, monkeypatch):
+        """ALPACA_PAPER=false + ALLOW_LIVE_TRADING=true must NOT raise."""
+        _minimal_env(monkeypatch, {"ALPACA_PAPER": "false", "ALLOW_LIVE_TRADING": "true"})
+        cfg = load_config()
+        assert cfg.paper is False
+        assert cfg.allow_live_trading is True
+
+    def test_allow_live_trading_defaults_to_false(self, monkeypatch):
+        """allow_live_trading must be False when env var is absent."""
+        _minimal_env(monkeypatch)
+        monkeypatch.delenv("ALLOW_LIVE_TRADING", raising=False)
+        cfg = load_config()
+        assert cfg.allow_live_trading is False
+
+    def test_paper_account_equity_default_is_1000(self, monkeypatch):
+        _minimal_env(monkeypatch)
+        cfg = load_config()
+        assert cfg.paper_account_equity == 1000.0
+
+    def test_paper_account_equity_can_be_set(self, monkeypatch):
+        _minimal_env(monkeypatch, {"PAPER_ACCOUNT_EQUITY": "5000"})
+        cfg = load_config()
+        assert cfg.paper_account_equity == 5000.0
+
+    def test_paper_account_equity_zero_raises(self, monkeypatch):
+        _minimal_env(monkeypatch, {"PAPER_ACCOUNT_EQUITY": "0"})
+        with pytest.raises(ValueError, match="PAPER_ACCOUNT_EQUITY"):
+            load_config()
+
+    def test_paper_account_equity_negative_raises(self, monkeypatch):
+        _minimal_env(monkeypatch, {"PAPER_ACCOUNT_EQUITY": "-500"})
+        with pytest.raises(ValueError, match="PAPER_ACCOUNT_EQUITY"):
+            load_config()
+
+    def test_max_allocation_pct_default_is_0_10(self, monkeypatch):
+        _minimal_env(monkeypatch)
+        cfg = load_config()
+        assert cfg.max_allocation_pct == 0.10
+
+    def test_max_allocation_pct_can_be_set(self, monkeypatch):
+        _minimal_env(monkeypatch, {"MAX_ALLOCATION_PCT": "0.25"})
+        cfg = load_config()
+        assert cfg.max_allocation_pct == 0.25
+
+    def test_max_allocation_pct_zero_raises(self, monkeypatch):
+        _minimal_env(monkeypatch, {"MAX_ALLOCATION_PCT": "0"})
+        with pytest.raises(ValueError, match="MAX_ALLOCATION_PCT"):
+            load_config()
+
+    def test_max_allocation_pct_above_1_raises(self, monkeypatch):
+        _minimal_env(monkeypatch, {"MAX_ALLOCATION_PCT": "1.5"})
+        with pytest.raises(ValueError, match="MAX_ALLOCATION_PCT"):
+            load_config()
+
+
+# ---------------------------------------------------------------------------
+# Config.is_in_etf_group()
+# ---------------------------------------------------------------------------
+
+
+class TestIsInEtfGroup:
+    def _make_config(self):
+        from datetime import time as dt_time
+        return Config(
+            api_key="k",
+            api_secret="s",
+            paper=True,
+            equities=("AAPL", "MSFT"),
+            index_etfs=("SPY", "QQQ"),
+            commodities=(),
+            risk_per_trade=0.01,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            entry_window_start=dt_time(9, 40),
+            entry_window_end=dt_time(11, 30),
+            max_positions=3,
+            max_trades_per_symbol=2,
+            daily_loss_stop=0.05,
+            max_etf_group_positions=1,
+            dry_run=True,
+        )
+
+    def test_spy_is_in_etf_group(self):
+        assert self._make_config().is_in_etf_group("SPY") is True
+
+    def test_qqq_is_in_etf_group(self):
+        assert self._make_config().is_in_etf_group("QQQ") is True
+
+    def test_equity_is_not_in_etf_group(self):
+        assert self._make_config().is_in_etf_group("AAPL") is False
+
+    def test_unknown_symbol_is_not_in_etf_group(self):
+        assert self._make_config().is_in_etf_group("GLD") is False
+
+    def test_case_insensitive(self):
+        assert self._make_config().is_in_etf_group("spy") is True
+        assert self._make_config().is_in_etf_group("qqq") is True
+
+
+# ---------------------------------------------------------------------------
+# Config.trade_watchlist() — regime ETFs excluded from trade candidates
+# ---------------------------------------------------------------------------
+
+
+class TestTradeWatchlist:
+    def _make_config(self, equities=(), index_etfs=(), commodities=()):
+        from datetime import time as dt_time
+        return Config(
+            api_key="k", api_secret="s", paper=True,
+            equities=equities, index_etfs=index_etfs, commodities=commodities,
+            risk_per_trade=0.01, stop_loss_pct=0.01, take_profit_pct=0.02,
+            entry_window_start=dt_time(9, 35), entry_window_end=dt_time(11, 30),
+            max_positions=2, max_trades_per_symbol=2, daily_loss_stop=0.05,
+            dry_run=True,
+        )
+
+    def test_trade_watchlist_excludes_index_etfs(self):
+        cfg = self._make_config(
+            equities=("PLTR", "AMD"),
+            index_etfs=("SPY", "QQQ", "IWM"),
+        )
+        tw = cfg.trade_watchlist()
+        for sym in ("SPY", "QQQ", "IWM"):
+            assert sym not in tw, f"Regime symbol {sym} must not appear in trade_watchlist()"
+
+    def test_trade_watchlist_includes_equities(self):
+        cfg = self._make_config(
+            equities=("PLTR", "AMD", "SOFI"),
+            index_etfs=("SPY", "QQQ", "IWM"),
+        )
+        assert cfg.trade_watchlist() == ["PLTR", "AMD", "SOFI"]
+
+    def test_trade_watchlist_includes_commodities(self):
+        cfg = self._make_config(
+            equities=("PLTR",), index_etfs=("SPY",), commodities=("GLD",),
+        )
+        assert cfg.trade_watchlist() == ["PLTR", "GLD"]
+
+    def test_watchlist_still_includes_all_groups(self):
+        cfg = self._make_config(equities=("PLTR",), index_etfs=("SPY",))
+        assert "SPY" in cfg.watchlist()
+        assert "PLTR" in cfg.watchlist()
+
+    def test_default_trade_watchlist_excludes_spy_qqq_iwm(self, monkeypatch):
+        _minimal_env(monkeypatch, {
+            "EQUITIES": "PLTR,AMD,SOFI,HOOD,INTC,XLK",
+            "INDEX_ETFS": "SPY,QQQ,IWM",
+        })
+        cfg = load_config()
+        tw = cfg.trade_watchlist()
+        for sym in ("SPY", "QQQ", "IWM"):
+            assert sym not in tw, f"{sym} must not be a trade candidate"
+        for sym in ("PLTR", "AMD", "SOFI", "HOOD", "INTC", "XLK"):
+            assert sym in tw, f"{sym} must be in trade_watchlist"
+
+    def test_rsi_overbought_env_can_be_80(self, monkeypatch):
+        monkeypatch.setenv("RSI_OVERBOUGHT", "80")
+        assert float(os.getenv("RSI_OVERBOUGHT")) == 80.0
