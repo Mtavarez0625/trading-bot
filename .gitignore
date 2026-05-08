@@ -1,10 +1,37 @@
-apps/api/venv/
-apps/api/.env
-apps/api/bot.log
-.DS_Store
+# Environment
 .env
+.env.local
+.env.*.local
+apps/api/.env
+
+# Virtual environments
 venv/
+.venv/
+apps/api/venv/
+
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Logs
+*.log
+logs/
+apps/api/bot.log
+
+# Database files
 *.db
 *.sqlite3
+
+# macOS
+.DS_Store
+
+# Node
 node_modules/
+
+# Bot runtime artifacts
+bot.pid
+bot/signal_log.csv
+bot/trade_log.csv
+bot/performance_*.json
