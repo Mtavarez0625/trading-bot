@@ -10,6 +10,7 @@ import sqlite3
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 
 DB_PATH = Path(__file__).parent / "trading_journal.db"
 
@@ -311,6 +312,53 @@ def close_paper_trade(symbol: str, exit_price: float, exit_reason: str):
         print(f"[journal] WARNING: failed to close paper trade for {symbol}: {e}")
 
 
+def partial_close_paper_trade(symbol: str, qty_sold: int, exit_price: float, entry_price: float) -> Optional[float]:
+    """
+    Record a partial take-profit exit:
+      - Reduces open qty by qty_sold
+      - Updates stop_price to entry_price (breakeven)
+      - Returns realized PnL for the sold portion (after slippage), or None on failure.
+
+    Does NOT close the trade — the remaining qty stays open.
+    """
+    try:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT id, qty, slippage_pct FROM paper_trades "
+                "WHERE symbol=? AND is_open=1 ORDER BY entry_timestamp DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if not row:
+                return None
+
+            trade_id     = row["id"]
+            current_qty  = row["qty"] or 0
+            slippage     = row["slippage_pct"] or 0.0
+
+            if qty_sold >= current_qty:
+                return None  # would close everything — caller should use close_paper_trade
+
+            eff_entry  = entry_price * (1 + slippage)
+            eff_exit   = exit_price  * (1 - slippage)
+            partial_pnl = round((eff_exit - eff_entry) * qty_sold, 4)
+            remaining   = current_qty - qty_sold
+
+            # Reduce qty; move stop to breakeven (entry_price)
+            con.execute(
+                "UPDATE paper_trades SET qty=?, stop_price=? WHERE id=?",
+                (remaining, entry_price, trade_id),
+            )
+            print(
+                f"[journal] {symbol} partial exit | sold={qty_sold} @ ${exit_price:.2f} | "
+                f"pnl={partial_pnl:.4f} | remaining_qty={remaining} | "
+                f"new_stop=${entry_price:.2f} (breakeven)"
+            )
+            return partial_pnl
+    except Exception as e:
+        print(f"[journal] WARNING: partial_close_paper_trade failed for {symbol}: {e}")
+        return None
+
+
 def get_open_paper_positions() -> list:
     try:
         with _conn() as con:
@@ -454,6 +502,93 @@ def query_symbol_performance() -> list:
             return results
     except Exception as e:
         return [{"error": str(e)}]
+
+
+def query_stable_v2_performance(start_date: str) -> dict:
+    """
+    Performance metrics restricted to trades entered on or after start_date.
+    Excludes all legacy/broken-session data recorded before the stable baseline.
+    Includes: win rate, profit factor, expectancy, max drawdown, avg hold,
+              max consecutive losses, and grade breakdown.
+    """
+    try:
+        with _conn() as con:
+            closed = con.execute(
+                "SELECT realized_pnl, realized_r_multiple, hold_time_minutes, entry_grade "
+                "FROM paper_trades "
+                "WHERE is_open=0 AND realized_pnl IS NOT NULL "
+                "AND entry_timestamp >= ?",
+                (start_date,),
+            ).fetchall()
+
+            if not closed:
+                return {
+                    "stable_v2_start_date": start_date,
+                    "total_closed":         0,
+                    "message":              "No stable-v2 trades recorded yet",
+                }
+
+            pnls   = [r["realized_pnl"] for r in closed]
+            wins   = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p <= 0]
+            rs     = [r["realized_r_multiple"] for r in closed if r["realized_r_multiple"] is not None]
+            holds  = [r["hold_time_minutes"]  for r in closed if r["hold_time_minutes"]  is not None]
+
+            # Grade breakdown
+            grade_counts: dict = {}
+            for r in closed:
+                g = r["entry_grade"] or "unknown"
+                grade_counts[g] = grade_counts.get(g, 0) + 1
+
+            # Max consecutive losing trades
+            max_consec = cur_streak = 0
+            for p in pnls:
+                if p <= 0:
+                    cur_streak += 1
+                    max_consec = max(max_consec, cur_streak)
+                else:
+                    cur_streak = 0
+
+            win_rate  = round(len(wins)   / len(pnls) * 100, 1) if pnls else 0.0
+            loss_rate = round(len(losses) / len(pnls) * 100, 1) if pnls else 0.0
+            avg_win   = round(sum(wins)   / len(wins),   4) if wins   else 0.0
+            avg_loss  = round(sum(losses) / len(losses), 4) if losses else 0.0
+            total_pnl = round(sum(pnls), 4)
+            gross_profit  = sum(wins)
+            gross_loss    = abs(sum(losses))
+            profit_factor = round(gross_profit / gross_loss, 3) if gross_loss > 0 else None
+            expectancy    = round((win_rate / 100 * avg_win) + (loss_rate / 100 * avg_loss), 4)
+
+            # Max drawdown on cumulative PnL curve
+            running = peak = max_dd = 0.0
+            for p in pnls:
+                running += p
+                if running > peak:
+                    peak = running
+                dd = peak - running
+                if dd > max_dd:
+                    max_dd = dd
+
+            return {
+                "stable_v2_start_date":   start_date,
+                "total_closed":           len(closed),
+                "win_rate":               win_rate,
+                "loss_rate":              loss_rate,
+                "avg_win":                avg_win,
+                "avg_loss":               avg_loss,
+                "expectancy":             expectancy,
+                "profit_factor":          profit_factor,
+                "total_pnl":              total_pnl,
+                "max_drawdown":           round(max_dd, 4),
+                "avg_hold_minutes":       round(sum(holds) / len(holds), 1) if holds else None,
+                "avg_r_multiple":         round(sum(rs) / len(rs), 3) if rs else None,
+                "largest_winner":         round(max(pnls), 4) if pnls else None,
+                "largest_loser":          round(min(pnls), 4) if pnls else None,
+                "max_consecutive_losses": max_consec,
+                "grade_breakdown":        grade_counts,
+            }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def query_recent_trades(limit: int = 20) -> list:

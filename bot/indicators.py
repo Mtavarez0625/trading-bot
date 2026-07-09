@@ -47,10 +47,48 @@ def compute_rolling_volume(series: pd.Series, period: int = 20) -> pd.Series:
     return series.rolling(window=period, min_periods=period).mean()
 
 
+def compute_vwap(df: pd.DataFrame) -> pd.Series:
+    """
+    Intraday VWAP that resets each calendar day.
+
+    typical_price = (high + low + close) / 3
+    VWAP_t = cumsum(tp * volume) / cumsum(volume), grouped by trading date.
+
+    For DataFrames without a DatetimeIndex the VWAP is computed as a single
+    cumulative value over all rows — suitable for unit tests with integer-indexed
+    synthetic data.
+    """
+    tp = (df["high"] + df["low"] + df["close"]) / 3.0
+    tpv = tp * df["volume"]
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        date_key = df.index.normalize()
+        cum_tpv = tpv.groupby(date_key).cumsum()
+        cum_vol = df["volume"].groupby(date_key).cumsum()
+    else:
+        cum_tpv = tpv.cumsum()
+        cum_vol = df["volume"].cumsum()
+
+    # NaN where cumulative volume is zero (first bar of a zero-volume day)
+    return cum_tpv / cum_vol.replace(0, float("nan"))
+
+
+def compute_relative_volume(volume: pd.Series, period: int = 20) -> pd.Series:
+    """
+    Current bar volume divided by the rolling average volume.
+    Returns NaN until `period` bars are available.
+    A value of 2.0 means twice the average volume — the threshold for the
+    Hybrid Ross Momentum strategy.
+    """
+    avg = compute_rolling_volume(volume, period)
+    return volume / avg.replace(0, float("nan"))
+
+
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Compute and attach EMA20, EMA50, RSI14, and vol_avg_20 to a copy of df.
-    Expects columns: close, volume.
+    Compute and attach EMA20, EMA50, RSI14, vol_avg_20, vwap, and
+    relative_volume to a copy of df.
+    Expects columns: open, high, low, close, volume.
     Does not mutate the original DataFrame.
     """
     df = df.copy()
@@ -58,6 +96,8 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema_50"] = compute_ema(df["close"], 50)
     df["rsi_14"] = compute_rsi(df["close"], 14)
     df["vol_avg_20"] = compute_rolling_volume(df["volume"], 20)
+    df["vwap"] = compute_vwap(df)
+    df["relative_volume"] = compute_relative_volume(df["volume"], 20)
     return df
 
 

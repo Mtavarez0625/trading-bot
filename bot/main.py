@@ -217,24 +217,32 @@ def _evaluate_symbol(
     log_signal(symbol, result)
 
     log.info(
-        "[%s] Signal=%s | trend=%s rsi=%s volume=%s | %s",
+        "[%s] Signal=%s | trend=%s rsi=%s volume=%s vwap=%s rel_vol=%s "
+        "not_extended=%s spread=%s | %s",
         symbol,
         result.signal,
         result.trend_ok,
         result.rsi_ok,
         result.volume_ok,
+        result.vwap_ok,
+        result.rel_vol_ok,
+        result.not_extended,
+        result.spread_ok,
         result.reason,
     )
 
     if result.ema_20 is not None:
         log.info(
-            "[%s] Indicators | EMA20=%.2f EMA50=%.2f RSI=%.1f vol=%.0f vol_avg=%.0f",
+            "[%s] Indicators | EMA20=%.2f EMA50=%.2f RSI=%.1f "
+            "vol=%.0f vol_avg=%.0f VWAP=%.2f rel_vol=%.2f",
             symbol,
             result.ema_20,
             result.ema_50,
             result.rsi_14,
             result.volume,
             result.vol_avg_20,
+            result.vwap if result.vwap is not None else 0.0,
+            result.relative_volume if result.relative_volume is not None else 0.0,
         )
 
     if not result.signal:

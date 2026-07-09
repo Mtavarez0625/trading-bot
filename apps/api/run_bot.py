@@ -9,11 +9,16 @@ import requests
 
 BASE_URL = "http://127.0.0.1:8000"
 TRADE_URL = f"{BASE_URL}/trade-watchlist"
+FLATTEN_URL = f"{BASE_URL}/flatten"
 MARKET_STATUS_URL = f"{BASE_URL}/market-status"
 
-SLEEP_MARKET_OPEN   = 300   # 5 minutes — normal cadence during the active window
-SLEEP_MARKET_CLOSED = 1800  # 30 minutes — used only when market is *confirmed* closed or outside window
-SLEEP_RETRY_ERROR   = 60    # 1 minute — used after a transient API/network failure; retries soon
+# Tracks whether we've already triggered end-of-window flatten today.
+_flatten_triggered = False
+
+SLEEP_OPENING_MOMENTUM = 60    # 1 minute — fast cadence 09:35–10:00 ET opening window
+SLEEP_MARKET_OPEN      = 300   # 5 minutes — normal cadence after 10:00 ET
+SLEEP_MARKET_CLOSED    = 1800  # 30 minutes — used only when market is *confirmed* closed or outside window
+SLEEP_RETRY_ERROR      = 60    # 1 minute — used after a transient API/network failure; retries soon
 TIMEOUT_SECONDS     = 60
 
 EASTERN = ZoneInfo("America/New_York")
@@ -28,8 +33,9 @@ def _parse_window_time(env_var: str, default: dtime) -> dtime:
             pass
     return default
 
-WINDOW_START = _parse_window_time("TRADING_WINDOW_START", dtime(9, 35))
-WINDOW_END   = _parse_window_time("TRADING_WINDOW_END",   dtime(11, 30))
+WINDOW_START          = _parse_window_time("TRADING_WINDOW_START", dtime(9, 35))
+WINDOW_END            = _parse_window_time("TRADING_WINDOW_END",   dtime(11, 30))
+OPENING_MOMENTUM_END  = dtime(10, 0)   # fast-cadence cutover: 09:35–10:00 ET
 
 # ── Single-instance lock (PID file) ──────────────────────────────────────────
 _LOCK_FILE = os.path.join(os.path.dirname(__file__), "bot.pid")
@@ -121,6 +127,27 @@ def log_config():
         log_line(f"WARNING: Could not fetch config summary: {e}")
 
 
+def run_flatten():
+    """Call the /flatten endpoint to close all open positions at window end."""
+    global _flatten_triggered
+    try:
+        resp = requests.post(FLATTEN_URL, timeout=TIMEOUT_SECONDS)
+        data = resp.json()
+        count = data.get("flattened_count", 0)
+        if count > 0:
+            log_line(f"FLATTEN: closed {count} position(s) at end of trading window")
+            for pos in data.get("positions", []):
+                log_line(
+                    f"  FLATTEN [{pos.get('symbol')}] qty={pos.get('qty')} "
+                    f"est_pnl=${pos.get('est_pnl')} | reason={pos.get('reason')}"
+                )
+        else:
+            log_line(f"FLATTEN: no open positions — already flat")
+        _flatten_triggered = True
+    except Exception as e:
+        log_line(f"WARNING: flatten request failed: {e}")
+
+
 def run_trade_cycle():
     try:
         response = requests.post(TRADE_URL, timeout=TIMEOUT_SECONDS)
@@ -128,26 +155,62 @@ def run_trade_cycle():
             data = response.json()
             results = data.get("results", [])
 
-            # Tally cycle stats for the one-line summary
+            # ── Position status lines (from monitor, logged before trade decisions) ──
+            for ps in data.get("position_statuses", []):
+                sym    = ps.get("symbol", "?")
+                status = ps.get("status", "?")
+                if status == "OPEN":
+                    log_line(
+                        f"  POS    [{sym}] entry=${ps.get('entry_price')} "
+                        f"cur=${ps.get('current_price')} "
+                        f"P&L=${ps.get('unrealized_pnl')} ({ps.get('unrealized_pct')}%) "
+                        f"stop={ps.get('stop_price') or 'n/a'} "
+                        f"TP={ps.get('take_profit_price') or 'n/a'}"
+                    )
+                elif status == "BOT_EXITED":
+                    log_line(
+                        f"  BOT_EXIT [{sym}] reason={ps.get('exit_status')} "
+                        f"exit=${ps.get('current_price')} entry=${ps.get('entry_price')} "
+                        f"pnl=${ps.get('unrealized_pnl')} "
+                        f"source={ps.get('exit_trigger_source', 'bot_hard_exit')}"
+                    )
+                elif status == "AUTO_CLOSED":
+                    log_line(
+                        f"  AUTO_EXIT [{sym}] reason={ps.get('exit_reason')} "
+                        f"exit=${ps.get('exit_price')} entry=${ps.get('entry_price')} "
+                        f"est_pnl=${ps.get('est_pnl')} "
+                        f"source={ps.get('exit_trigger_source', 'alpaca_bracket')}"
+                    )
+
+            # Tally cycle stats
             scanned       = len(results)
             signals       = sum(1 for r in results if r.get("signal") == "BUY")
             entered       = sum(1 for r in results if r.get("new_entry_opened"))
             errors        = sum(1 for r in results if r.get("signal") == "ERROR")
+            # Count blocked: any result with blocked_by set (includes HOLD-filtered signals)
             blocked_total = sum(1 for r in results if r.get("blocked_by"))
-            # exited: SELL with an actual position (no-position SELL is now HOLD — not counted)
+            near_misses   = sum(1 for r in results if r.get("near_miss"))
             exited        = sum(1 for r in results if r.get("signal") == "SELL" and r.get("starting_qty", 0) > 0)
-            # skipped: anything with a SKIP: decision and no entry opened
-            skipped       = sum(
-                1 for r in results
-                if (r.get("decision_summary") or "").startswith("SKIP:") and not r.get("new_entry_opened")
-            )
 
+            # Build per-blocker breakdown string
+            blocker_counts: dict = {}
+            for r in results:
+                b = r.get("blocked_by")
+                if b:
+                    blocker_counts[b] = blocker_counts.get(b, 0) + 1
+            blocker_detail = ""
+            if blocker_counts:
+                parts = [f"{k}×{v}" for k, v in sorted(blocker_counts.items())]
+                blocker_detail = f" [{', '.join(parts)}]"
+
+            near_miss_tag = f" | {near_misses} near-miss" if near_misses else ""
             log_line(
-                f"Cycle: {scanned} scanned | {signals} signals | {entered} entered | "
-                f"{skipped} skipped | {blocked_total} blocked | {exited} exited | {errors} errors"
+                f"Cycle: {scanned} scanned | {signals} BUY | {entered} entered | "
+                f"{blocked_total} blocked{blocker_detail} | {exited} exited | "
+                f"{errors} errors{near_miss_tag}"
             )
 
-            # Per-symbol line (ERROR paths always printed; others condensed)
+            # Per-symbol lines
             for item in results:
                 sym     = item.get("symbol", "?")
                 sig     = item.get("signal", "?")
@@ -159,12 +222,23 @@ def run_trade_cycle():
                 grade   = item.get("grade", "")
                 tier_tag   = f" [{tier}]" if tier else ""
                 score_tag  = f" score={score}[{grade}]" if score is not None else ""
-                if sig == "ERROR" or item.get("error"):
-                    log_line(f"  ERROR [{sym}] {summary}")
+                if item.get("error"):
+                    log_line(f"  ERROR  [{sym}] {item.get('error')}")
+                elif sig == "ERROR":
+                    log_line(f"  ERROR  [{sym}] {summary}")
+                elif item.get("new_entry_opened"):
+                    log_line(f"  ENTER  [{sym}]{tier_tag}{score_tag} | {summary}")
+                elif sig == "SELL" and qty > 0:
+                    log_line(f"  EXIT   [{sym}] {summary}")
+                elif item.get("near_miss"):
+                    gaps = item.get("near_miss_gaps", "")
+                    log_line(f"  NEAR_MISS [{sym}]{score_tag} | missing: {gaps} | {summary}")
                 elif blocked:
-                    log_line(f"  [{sym}] {sig}{tier_tag}{score_tag} | SKIP({blocked}) | {summary} | qty={qty}")
+                    log_line(f"  BLOCK  [{sym}]{score_tag} reason={blocked} | {summary}")
+                elif sig == "BUY":
+                    log_line(f"  BUY    [{sym}]{tier_tag}{score_tag} | {summary}")
                 else:
-                    log_line(f"  [{sym}] {sig}{tier_tag}{score_tag} | {summary} | qty={qty}")
+                    log_line(f"  {sig:<5}  [{sym}]{tier_tag}{score_tag} | {summary}")
         except Exception:
             log_line(f"Trade cycle response (raw): {response.text}")
         response.raise_for_status()
@@ -198,7 +272,10 @@ if __name__ == "__main__":
                 sleep_seconds = SLEEP_RETRY_ERROR
 
             elif not market_open:
-                # API confirmed market is closed.
+                # Reset the daily flatten flag when the market is closed overnight.
+                # This ensures flatten fires again the next trading day.
+                _flatten_triggered = False
+
                 # Between 9:00 and window start (9:35) poll every 60s to catch the open promptly.
                 et = get_eastern_time()
                 if dtime(9, 0) <= et < WINDOW_START:
@@ -221,18 +298,33 @@ if __name__ == "__main__":
                     )
                     sleep_seconds = SLEEP_MARKET_OPEN
                 elif et >= WINDOW_END:
-                    log_line(
-                        f"SLEEP REASON: After trading window ({et.strftime('%H:%M')} ET, "
-                        f"window ended {WINDOW_END.strftime('%H:%M')}) — sleeping 30 min"
-                    )
+                    # ── Flatten at window end (once per day) ─────────────────
+                    if not _flatten_triggered:
+                        log_line(
+                            f"TRADING WINDOW ENDED ({et.strftime('%H:%M')} ET) — "
+                            f"triggering end-of-window flatten"
+                        )
+                        run_flatten()
+                    else:
+                        log_line(
+                            f"SLEEP REASON: After trading window ({et.strftime('%H:%M')} ET, "
+                            f"window ended {WINDOW_END.strftime('%H:%M')}) — sleeping 30 min"
+                        )
                     sleep_seconds = SLEEP_MARKET_CLOSED
                 else:
-                    log_line(
-                        f"SLEEP REASON: Normal cadence after trade cycle "
-                        f"({et.strftime('%H:%M')} ET) — sleeping 5 min"
-                    )
                     run_trade_cycle()
-                    sleep_seconds = SLEEP_MARKET_OPEN
+                    if et < OPENING_MOMENTUM_END:
+                        log_line(
+                            f"SLEEP REASON: Opening momentum cadence (60s) "
+                            f"({et.strftime('%H:%M')} ET)"
+                        )
+                        sleep_seconds = SLEEP_OPENING_MOMENTUM
+                    else:
+                        log_line(
+                            f"SLEEP REASON: Normal cadence after 10:00 ET (300s) "
+                            f"({et.strftime('%H:%M')} ET)"
+                        )
+                        sleep_seconds = SLEEP_MARKET_OPEN
 
             log_line(f"Sleeping {sleep_seconds}s ...")
             time.sleep(sleep_seconds)
