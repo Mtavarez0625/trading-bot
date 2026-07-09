@@ -30,8 +30,18 @@ apps/api/bot.log
 # Node
 node_modules/
 
+# Environment backups (contain credentials)
+.env.backup*
+
 # Bot runtime artifacts
-bot.pid
+*.pid
+*.bak
+bot/logs/
 bot/signal_log.csv
 bot/trade_log.csv
 bot/performance_*.json
+apps/api/data/
+
+# Next.js build output
+.next/
+*.tsbuildinfo
