@@ -1,0 +1,112 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface:   #090f1a;
+  --panel:     #0e1929;
+  --panel-2:   #0a1320;
+  --border:    #192c40;
+  --border-2:  #243d58;
+  --text-1:    #dce6f1;
+  --text-2:    #5f7d97;
+  --text-3:    #364f63;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background-color: var(--surface);
+  color: var(--text-1);
+  font-family: 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Animations ─────────────────────────────────────────────────────────── */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Utility classes ────────────────────────────────────────────────────── */
+@layer utilities {
+  /* Core panel */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-4;
+  }
+
+  /* Panel section title */
+  .panel-title {
+    color: var(--text-2);
+    @apply text-[10px] font-bold uppercase mb-3;
+    letter-spacing: 0.16em;
+  }
+
+  /* KPI card with hover lift */
+  .kpi-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    @apply rounded-xl p-5 flex-1 min-w-[144px] relative overflow-hidden cursor-default;
+    transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  }
+  .kpi-card:hover {
+    border-color: var(--border-2);
+    transform: translateY(-2px);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border-2);
+  }
+
+  /* Static dot */
+  .dot { @apply inline-block w-2 h-2 rounded-full; }
+
+  /* Value colours */
+  .val-pos     { @apply text-emerald-400; }
+  .val-neg     { @apply text-red-400; }
+  .val-neutral { @apply text-slate-300; }
+
+  /* Tag chips */
+  .chip {
+    @apply inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold;
+    letter-spacing: 0.04em;
+  }
+  .chip-green  { @apply bg-emerald-950/80 text-emerald-300 ring-1 ring-emerald-800/60; }
+  .chip-amber  { @apply bg-amber-950/80  text-amber-300  ring-1 ring-amber-800/60; }
+  .chip-red    { @apply bg-red-950/80    text-red-300    ring-1 ring-red-800/60; }
+  .chip-blue   { @apply bg-blue-950/80   text-blue-300   ring-1 ring-blue-800/60; }
+  .chip-purple { @apply bg-purple-950/80 text-purple-300 ring-1 ring-purple-800/60; }
+  .chip-muted  { @apply text-slate-400   ring-1 ring-slate-700/60; background: var(--panel-2); }
+
+  /* Loading skeleton */
+  .skeleton {
+    background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    @apply rounded;
+  }
+
+  /* Fade-in animation */
+  .animate-fade-in-up { animation: fade-in-up 0.35s ease-out both; }
+}
+
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--border); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-2); }
