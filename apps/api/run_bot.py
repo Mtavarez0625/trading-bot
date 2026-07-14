@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 import time
 import atexit
@@ -254,8 +255,15 @@ def run_trade_cycle():
     return False
 
 
+def _handle_sigterm(signum, frame):
+    # Exit via sys.exit so atexit runs and the PID lock file is removed.
+    log_line("Received SIGTERM — shutting down cleanly")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     _acquire_instance_lock()
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     log_line("Bot runner started")
     log_config()
     try:
