@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -58,9 +59,10 @@ def _startup():
         f"[startup] SESSION STATE RESET: session_flattened=False | "
         f"consecutive_losses=0 | loss_cooldown=None | daily_loss_shutdown=False"
     )
+    _mode = _execution_mode_fields()
     print(
         f"[startup] Trading Bot API V3 ready | "
-        f"mode={'DRY_RUN' if DRY_RUN else 'PAPER_LIVE'} | "
+        f"execution_mode={_mode['execution_mode']} | "
         f"paper={ALPACA_PAPER} | live_locked={not ALLOW_LIVE_TRADING} | "
         f"window={TRADING_WINDOW_START}–{TRADING_WINDOW_END} ET | "
         f"last_entry_time={LAST_ENTRY_TIME} ET | "
@@ -72,13 +74,13 @@ def _startup():
     )
     _log_evt(
         "bot_started",
-        f"Bot V3 started | mode={'DRY_RUN' if DRY_RUN else 'PAPER_LIVE'} | watchlist={TRADE_WATCHLIST}",
+        f"Bot V3 started | execution_mode={_mode['execution_mode']} | watchlist={TRADE_WATCHLIST}",
         severity="success",
-        data={"dry_run": DRY_RUN, "paper": ALPACA_PAPER, "watchlist": TRADE_WATCHLIST},
+        data={**_mode, "watchlist": TRADE_WATCHLIST},
     )
     send_telegram_alert(
         "Bot Started",
-        f"Mode: {'DRY_RUN' if DRY_RUN else 'PAPER_LIVE'} | Watchlist: {', '.join(TRADE_WATCHLIST)}",
+        f"Execution mode: {_mode['execution_mode']} | Watchlist: {', '.join(TRADE_WATCHLIST)}",
         severity="success",
     )
 
@@ -120,6 +122,46 @@ TRADING_WINDOW_START = os.getenv("TRADING_WINDOW_START", "09:35")
 TRADING_WINDOW_END   = os.getenv("TRADING_WINDOW_END",   "11:30")
 ALPACA_PAPER         = os.getenv("ALPACA_PAPER", "true").lower() == "true"
 ALLOW_LIVE_TRADING   = os.getenv("ALLOW_LIVE_TRADING", "false").lower() == "true"
+
+
+def _execution_mode_fields() -> dict:
+    """
+    Single source of truth for how execution mode is reported across
+    /health, dashboard endpoints, logs, and Telegram — so nothing can
+    disagree about whether real money is at risk.
+
+    execution_mode:
+      "dry_run"          — DRY_RUN=true, no orders sent anywhere.
+      "paper_live"        — orders sent, but only to Alpaca's paper endpoint
+                             (DRY_RUN=false, ALPACA_PAPER=true, ALLOW_LIVE_TRADING=false).
+      "live_money"        — orders sent to Alpaca's real-money endpoint
+                             (ALPACA_PAPER=false AND ALLOW_LIVE_TRADING=true).
+      "live_locked_out"   — ALPACA_PAPER=false but ALLOW_LIVE_TRADING=false; the
+                             bot/config.py startup hard-lock refuses to run this
+                             combination, but it's labeled explicitly just in case.
+    """
+    if DRY_RUN:
+        execution_mode = "dry_run"
+    elif ALPACA_PAPER and not ALLOW_LIVE_TRADING:
+        execution_mode = "paper_live"
+    elif not ALPACA_PAPER and ALLOW_LIVE_TRADING:
+        execution_mode = "live_money"
+    else:
+        execution_mode = "live_locked_out"
+
+    return {
+        "environment":         "paper" if ALPACA_PAPER else "live",
+        "execution_mode":      execution_mode,
+        "paper_trading":       ALPACA_PAPER,
+        "real_money_trading":  (not ALPACA_PAPER) and ALLOW_LIVE_TRADING,
+        "dry_run":             DRY_RUN,
+        "live_trading_locked": not ALLOW_LIVE_TRADING,
+        # Deprecated: kept only for dashboards/scripts still reading bot_mode.
+        # New code should read execution_mode above instead.
+        "bot_mode":            execution_mode,
+    }
+
+
 # After TRADING_WINDOW_END: market-sell all open bot-managed positions.
 FLATTEN_AT_WINDOW_END = os.getenv("FLATTEN_AT_WINDOW_END", "false").lower() == "true"
 # Warn loudly on startup if Alpaca paper positions already exist before the trading window.
@@ -348,11 +390,96 @@ def _headers():
 
 
 # ── Journal reconciliation ────────────────────────────────────────────────────
+def _find_broker_closing_fill(
+    symbol: str,
+    stop_price: float = 0.0,
+    tp_price: float = 0.0,
+    after_iso: Optional[str] = None,
+) -> Optional[dict]:
+    """
+    Search Alpaca's closed orders for the sell fill that actually closed `symbol`,
+    instead of ever inventing an exit price. Shared by startup reconciliation
+    (_reconcile_journal_state) and cycle-time bracket reconciliation so both use the
+    same lookup/classification logic.
+
+    Returns {"exit_price": float, "exit_reason": str, "order_id": str} when a filled
+    sell order with a real fill price is found, or None when no reliable fill can be
+    identified — callers must not fabricate a price in that case.
+    """
+    try:
+        ord_resp = requests.get(
+            f"{BASE_URL}/v2/orders",
+            headers=_headers(),
+            params={"status": "closed", "symbols": symbol, "limit": 20},
+            timeout=10,
+        )
+    except Exception:
+        return None
+    if ord_resp.status_code != 200:
+        return None
+
+    try:
+        orders = ord_resp.json()
+    except Exception:
+        return None
+
+    filled_sells = [
+        o for o in orders
+        if o.get("status") == "filled" and o.get("side") == "sell"
+    ]
+
+    if after_iso:
+        try:
+            after_dt = datetime.fromisoformat(after_iso)
+            filled_sells = [
+                o for o in filled_sells
+                if o.get("filled_at")
+                and datetime.fromisoformat(str(o["filled_at"]).replace("Z", "+00:00")) >= after_dt
+            ]
+        except Exception:
+            pass  # if timestamps can't be parsed, fall back to considering all filled sells
+
+    if not filled_sells:
+        return None
+
+    # Alpaca returns closed orders most-recent-first — take the most relevant fill.
+    last    = filled_sells[0]
+    fill_px = float(last.get("filled_avg_price") or 0)
+    if fill_px <= 0:
+        return None
+
+    order_type = str(last.get("type") or last.get("order_type") or "").lower()
+    if stop_price > 0 and fill_px <= stop_price * 1.02:
+        exit_reason = "stop_loss_hit"
+    elif tp_price > 0 and fill_px >= tp_price * 0.98:
+        exit_reason = "take_profit_hit"
+    elif "stop" in order_type:
+        exit_reason = "stop_loss_hit"
+    elif "limit" in order_type:
+        exit_reason = "take_profit_hit"
+    elif order_type == "market":
+        exit_reason = "market_close"
+    else:
+        exit_reason = "unclassified_exit"
+
+    return {"exit_price": fill_px, "exit_reason": exit_reason, "order_id": last.get("id")}
+
+
 def _reconcile_journal_state() -> list:
     """
     Compare open journal entries against real Alpaca positions.
-    Any journal entry marked open for a symbol that Alpaca no longer holds
-    is closed with exit_reason='reconcile_stale'.
+
+    For any journal entry marked open for a symbol Alpaca no longer holds, this
+    searches Alpaca's closed orders (via _find_broker_closing_fill) for the real
+    closing fill before touching the journal:
+      - a confirmed fill is found  -> close with that price, reason "reconciled_<type>",
+        data_quality_status="verified"
+      - no reliable fill is found  -> close with exit_price=None, exit_reason=
+        "unresolved_reconciliation", data_quality_status="unresolved_reconciliation".
+        No price is invented, and analytics excludes the row automatically.
+    dry-run journal entries never had a real Alpaca order behind them in the first
+    place, so they're cleared with exit_reason="reconcile_stale" and tagged
+    data_quality_status="suspect_zero_exit" (also analytics-excluded).
 
     Called on startup to flush stale entries caused by:
     - dry-run trades that were recorded but never really opened
@@ -376,12 +503,47 @@ def _reconcile_journal_state() -> list:
     open_paper = journal.get_open_paper_positions()
     for pos in open_paper:
         sym = str(pos.get("symbol", "")).upper()
-        # In dry-run mode there are never real Alpaca positions — clear all journal entries
-        # that survived a restart, since we have no real position backing them.
-        if DRY_RUN or sym not in alpaca_syms:
-            journal.close_paper_trade(sym, 0.0, "reconcile_stale")
+
+        if DRY_RUN:
+            # In dry-run mode there are never real Alpaca positions or broker fills —
+            # clear journal entries that survived a restart. No price is fabricated as
+            # "real"; the row is tagged suspect so analytics excludes it.
+            journal.close_paper_trade(
+                sym, 0.0, "reconcile_stale",
+                data_quality_status="suspect_zero_exit",
+                data_quality_note="dry-run journal entry cleared at startup; no real broker fill exists",
+            )
             cleared.append(sym)
-            print(f"[reconcile] STATE RECONCILED: cleared stale local position for {sym}")
+            print(f"[reconcile] STATE RECONCILED: cleared stale dry-run journal position for {sym}")
+            continue
+
+        if sym not in alpaca_syms:
+            fill = _find_broker_closing_fill(
+                sym,
+                stop_price=pos.get("stop_price") or 0.0,
+                tp_price=pos.get("take_profit_price") or 0.0,
+                after_iso=pos.get("entry_timestamp"),
+            )
+            if fill:
+                journal.close_paper_trade(sym, fill["exit_price"], f"reconciled_{fill['exit_reason']}")
+                print(
+                    f"[reconcile] STATE RECONCILED: {sym} closed via confirmed broker fill "
+                    f"@ {fill['exit_price']} ({fill['exit_reason']})"
+                )
+            else:
+                journal.close_paper_trade(
+                    sym, None, "unresolved_reconciliation",
+                    data_quality_status="unresolved_reconciliation",
+                    data_quality_note=(
+                        "journal marked open but Alpaca had no matching position or "
+                        "closing fill at startup reconciliation"
+                    ),
+                )
+                print(
+                    f"[reconcile] STATE RECONCILED: {sym} — no broker fill found, "
+                    f"marked unresolved_reconciliation (no price fabricated)"
+                )
+            cleared.append(sym)
 
     if cleared:
         print(f"[reconcile] Cleared {len(cleared)} stale journal position(s): {cleared}")
@@ -1639,34 +1801,22 @@ def _monitor_and_sync_positions() -> list:
                 })
         else:
             # Position gone from Alpaca — bracket order (stop or TP) must have fired.
-            # Try to find the fill price and classify the exit reason.
-            exit_price  = 0.0
-            exit_reason = "auto_closed_bracket"
-            try:
-                ord_resp = requests.get(
-                    f"{BASE_URL}/v2/orders",
-                    headers=_headers(),
-                    params={"status": "closed", "symbols": sym, "limit": 10},
-                    timeout=10,
+            # Look up the real closing fill via the shared helper instead of guessing.
+            fill = _find_broker_closing_fill(sym, stop_price=stop_price, tp_price=tp_price)
+            if fill:
+                exit_price  = fill["exit_price"]
+                exit_reason = fill["exit_reason"]
+                journal.close_paper_trade(sym, exit_price, exit_reason)
+            else:
+                # No reliable fill found — close so the journal isn't stuck "open" against
+                # a position Alpaca no longer has, but never report this as trustworthy data.
+                exit_price  = 0.0
+                exit_reason = "auto_closed_bracket"
+                journal.close_paper_trade(
+                    sym, exit_price, exit_reason,
+                    data_quality_status="suspect_zero_exit",
+                    data_quality_note="no matching broker closing fill found during cycle-time reconciliation",
                 )
-                if ord_resp.status_code == 200:
-                    filled_sells = [
-                        o for o in ord_resp.json()
-                        if o.get("status") == "filled" and o.get("side") == "sell"
-                    ]
-                    if filled_sells:
-                        last = filled_sells[0]
-                        fill_px = float(last.get("filled_avg_price") or 0)
-                        if fill_px > 0:
-                            exit_price = fill_px
-                            if stop_price > 0 and fill_px <= stop_price * 1.02:
-                                exit_reason = "stop_loss_hit"
-                            elif tp_price > 0 and fill_px >= tp_price * 0.98:
-                                exit_reason = "take_profit_hit"
-            except Exception:
-                pass  # fail open — use generic reason
-
-            journal.close_paper_trade(sym, exit_price, exit_reason)
             est_pnl = round((exit_price - ep) * qty, 2) if exit_price > 0 and ep > 0 else None
             _partial_tp_executed.discard(sym)
             _breakeven_armed.discard(sym)
@@ -1720,7 +1870,7 @@ def _send_session_end_telegram() -> None:
         try:
             with journal._conn() as _con:
                 _rows = _con.execute(
-                    "SELECT realized_pnl FROM paper_trades WHERE is_open=0 AND DATE(exit_timestamp)=?",
+                    f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} AND DATE(exit_timestamp)=?",
                     (today_str,),
                 ).fetchall()
                 realized_pnl = round(sum(r["realized_pnl"] for r in _rows if r["realized_pnl"]), 2)
@@ -1957,8 +2107,7 @@ def health():
     return {
         "ok":                    True,
         "version":               "v3",
-        "dry_run":               DRY_RUN,
-        "bot_mode":              "dry_run" if DRY_RUN else "live",
+        **_execution_mode_fields(),
         "disable_new_entries":   DISABLE_NEW_ENTRIES,
         "observe_only_mode":     _observe_only_mode,
         "api_failure_count":     _api_failure_count,
@@ -2409,6 +2558,30 @@ def _submit_order(order: dict) -> dict:
         return {"error": str(e)}
 
 
+def _poll_order_fill(order_id: str, max_attempts: int = 5, delay_sec: float = 0.5) -> dict:
+    """
+    Poll a submitted Alpaca order until it reaches a terminal state (filled, rejected,
+    canceled, expired) or the bounded attempt budget is exhausted — never an unbounded
+    loop, and the total wait is capped at max_attempts * delay_sec (~2.5s by default).
+
+    Returns the last known order dict (which may still be in a non-terminal state if
+    the budget ran out), or {} if the order could never be fetched.
+    """
+    last: dict = {}
+    for attempt in range(max_attempts):
+        try:
+            resp = requests.get(f"{BASE_URL}/v2/orders/{order_id}", headers=_headers(), timeout=10)
+            if resp.status_code == 200:
+                last = resp.json()
+                if last.get("status") in ("filled", "rejected", "canceled", "expired"):
+                    return last
+        except Exception:
+            pass
+        if attempt < max_attempts - 1:
+            time.sleep(delay_sec)
+    return last
+
+
 def _cancel_order_call(order_id: str) -> dict:
     if DRY_RUN:
         return {"dry_run": True, "would_cancel": order_id}
@@ -2647,23 +2820,25 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
 
     # ── BUY ──────────────────────────────────────────────────────────────────
     if signal == "BUY":
-        # Duplicate-position guard: check both Alpaca live position AND journal open entry.
+        # Already-held guard: check both Alpaca live position AND journal open entry.
         # In live paper mode the journal may have a record even if Alpaca already filled.
         # In dry-run mode Alpaca has no positions so only the journal check applies.
+        # Diagnostic classification only — this does not close, add to, or otherwise
+        # change the existing position; it only labels why the BUY was skipped.
         if starting_qty > 0 or journal.has_open_paper_trade(symbol):
             _dup_src = "alpaca_position" if starting_qty > 0 else "journal_entry"
             print(
-                f"[entry_guard] {symbol} | SKIP: reason=duplicate_position_guard | "
+                f"[entry_guard] {symbol} | SKIP: reason=already_held | "
                 f"source={_dup_src} | alpaca_qty={starting_qty} | "
                 f"journal_open={journal.has_open_paper_trade(symbol)}"
             )
             result = {
                 "signal":           signal,
                 "signal_reason":    signal_data.get("signal_reason"),
-                "decision_summary": f"SKIP: duplicate_position_guard ({_dup_src})",
+                "decision_summary": f"SKIP: already_held ({_dup_src})",
                 "starting_qty":     starting_qty,
                 "actions":          actions,
-                "blocked_by":       "duplicate_position_guard",
+                "blocked_by":       "already_held",
                 "message":          f"{symbol} already has an open position ({_dup_src})",
             }
             _log_trade(symbol, result, signal_data)
@@ -3638,11 +3813,66 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
                 "response":    open_result,
             })
 
+        # ── Confirm the entry fill before trusting an estimated price ────────────
+        # DRY_RUN never has a real order to poll — the decision-time price is the
+        # only price that exists. For real paper orders, poll (bounded, conservative
+        # timeout) until the order reaches a terminal state so the journal never
+        # records a "completed" position using only the decision-time estimate.
+        entry_data_quality      = "verified"
+        entry_data_quality_note = None
+
+        if not DRY_RUN:
+            order_id = open_result.get("id")
+            if not order_id:
+                entry_data_quality = "pending_entry_fill"
+                entry_data_quality_note = (
+                    f"broker did not return an order id on submit; response={open_result}"
+                )
+            else:
+                polled      = _poll_order_fill(order_id)
+                fill_status = polled.get("status")
+                if fill_status in ("rejected", "canceled", "expired"):
+                    # No position was actually opened — do not journal a phantom entry
+                    # or count it toward the daily per-symbol trade limit.
+                    result = {
+                        "signal":           signal,
+                        "signal_reason":    signal_data.get("signal_reason"),
+                        "decision_summary": f"SKIP: broker order {fill_status}",
+                        "starting_qty":     starting_qty,
+                        "actions":          actions,
+                        "blocked_by":       f"order_{fill_status}",
+                        "message":          f"{symbol} bracket order was {fill_status} by Alpaca — no position opened",
+                    }
+                    _log_trade(symbol, result, signal_data)
+                    return result
+                elif fill_status == "filled":
+                    filled_px  = float(polled.get("filled_avg_price") or 0)
+                    filled_qty = float(polled.get("filled_qty") or 0)
+                    if filled_px > 0:
+                        if abs(filled_px - entry_price) > 0.005:
+                            entry_data_quality_note = (
+                                f"confirmed fill ${filled_px:.4f} vs decision-time "
+                                f"signal price ${entry_price:.4f}"
+                            )
+                        entry_price = filled_px
+                    if filled_qty > 0:
+                        trade_qty = int(filled_qty)
+                else:
+                    # Still pending after the bounded poll budget — do not fabricate a
+                    # fill. Record the position with the decision-time estimate but
+                    # flag it so analytics can treat the entry price as unconfirmed.
+                    entry_data_quality = "pending_entry_fill"
+                    entry_data_quality_note = (
+                        f"order accepted (status={fill_status}) but not confirmed filled "
+                        f"within poll budget; entry_price is the decision-time estimate"
+                    )
+
         _record_trade_time(symbol)
         entry_tier_label = signal_data.get("entry_tier", "unknown")
         print(
             f"[execute_trade] {symbol} | {'DRY RUN — ' if DRY_RUN else ''}"
             f"ENTERED long [{entry_tier_label}-trend] qty={trade_qty} "
+            f"entry=${entry_price:.2f} ({entry_data_quality}) "
             f"stop={stop_loss_price} tp={take_profit_price} | "
             f"{signal_data.get('decision_summary', '')}"
         )
@@ -3668,6 +3898,8 @@ def execute_trade(symbol: str, block_new_entry: bool = False):
             "intraday_confirmed":   signal_data.get("intraday_confirmed"),
             "entry_score":          candidate_score,
             "entry_grade":          candidate_grade,
+            "data_quality_status":  entry_data_quality,
+            "data_quality_note":    entry_data_quality_note,
         })
 
         # Record this entry toward the daily per-symbol trade count
@@ -4011,7 +4243,7 @@ def daily_report():
     try:
         with journal._conn() as con:
             s_rows = con.execute(
-                "SELECT realized_pnl FROM paper_trades WHERE is_open=0 "
+                f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} "
                 "AND exit_timestamp >= ?",
                 (_session_start.isoformat(),),
             ).fetchall()
@@ -4071,19 +4303,23 @@ def daily_report():
     today_exits_db: list = []
     try:
         with journal._conn() as con:
+            # Raw listing — intentionally unfiltered by data quality so nothing is hidden
+            # from the journal view; performance stats elsewhere exclude suspect rows.
             rows = con.execute(
-                "SELECT symbol, exit_timestamp, exit_price, entry_price, realized_pnl, exit_reason "
+                "SELECT symbol, exit_timestamp, exit_price, entry_price, realized_pnl, "
+                "exit_reason, data_quality_status "
                 "FROM paper_trades WHERE is_open=0 AND DATE(exit_timestamp) = ?",
                 (today_str,),
             ).fetchall()
             today_exits_db = [
                 {
-                    "symbol":      r["symbol"],
-                    "exit_time":   r["exit_timestamp"],
-                    "exit_price":  r["exit_price"],
-                    "entry_price": r["entry_price"],
-                    "realized_pnl": r["realized_pnl"],
-                    "reason":      r["exit_reason"],
+                    "symbol":              r["symbol"],
+                    "exit_time":           r["exit_timestamp"],
+                    "exit_price":          r["exit_price"],
+                    "entry_price":         r["entry_price"],
+                    "realized_pnl":        r["realized_pnl"],
+                    "reason":              r["exit_reason"],
+                    "data_quality_status": r["data_quality_status"],
                 }
                 for r in rows
             ]
@@ -4133,7 +4369,10 @@ def daily_report():
         "last_entry_time":         LAST_ENTRY_TIME,
         "past_last_entry_time":    _is_past_last_entry_time(),
         "entries_allowed_now":     _entries_allowed_now(),
-        "api_is_live":             True,
+        # Renamed from "api_is_live" — this reflects that the FastAPI process
+        # is actively serving requests, NOT that live-money trading is enabled.
+        # See execution_mode / paper_trading fields for the trading-mode signal.
+        "api_server_active":       True,
         "run_bot_active":          _is_run_bot_active(),
         "flatten_at_window_end":   FLATTEN_AT_WINDOW_END,
         "session_flattened":       _session_flattened,
@@ -5005,7 +5244,7 @@ def trade_watchlist():
         try:
             with journal._conn() as _tg_con:
                 _pnl_rows = _tg_con.execute(
-                    "SELECT realized_pnl FROM paper_trades WHERE is_open=0 AND DATE(exit_timestamp)=?",
+                    f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} AND DATE(exit_timestamp)=?",
                     (_today_key2,),
                 ).fetchall()
                 _daily_pnl = round(sum(r["realized_pnl"] for r in _pnl_rows if r["realized_pnl"]), 2)
@@ -5190,6 +5429,9 @@ def strategy_status():
         for sym, last in _last_trade_time.items()
     }
     return {
+        **_execution_mode_fields(),
+        # Deprecated: kept for any script still reading "mode" as a string.
+        # Use execution_mode instead.
         "mode":            "DRY_RUN" if DRY_RUN else "PAPER_LIVE",
         "paper_confirmed": ALPACA_PAPER and not ALLOW_LIVE_TRADING,
         "signal_filters": {
@@ -5435,7 +5677,7 @@ def post_market_review():
     try:
         with journal._conn() as con:
             rows = con.execute(
-                "SELECT realized_pnl FROM paper_trades WHERE is_open=0 AND exit_timestamp >= ?",
+                f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} AND exit_timestamp >= ?",
                 (_session_start.isoformat(),),
             ).fetchall()
             session_closed = len(rows)
@@ -5774,7 +6016,7 @@ def s_tier_readiness():
     try:
         with journal._conn() as con:
             rows = con.execute(
-                "SELECT realized_pnl FROM paper_trades WHERE is_open=0 AND DATE(exit_timestamp)=?",
+                f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} AND DATE(exit_timestamp)=?",
                 (today_str,),
             ).fetchall()
             today_closed = len(rows)
@@ -5948,7 +6190,7 @@ def dashboard_data():
     try:
         with journal._conn() as con:
             rows = con.execute(
-                "SELECT realized_pnl FROM paper_trades WHERE is_open=0 AND DATE(exit_timestamp)=?",
+                f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} AND DATE(exit_timestamp)=?",
                 (today,),
             ).fetchall()
             realized_pnl = round(sum(r["realized_pnl"] for r in rows if r["realized_pnl"]), 4)
@@ -5978,8 +6220,11 @@ def dashboard_data():
         "recent_events":       get_recent_events(limit=20),
         "alerts_enabled":      os.getenv("TELEGRAM_ALERTS_ENABLED", "false").lower() == "true",
         "daily_loss_shutdown": _daily_loss_shutdown,
+        # dry_run / paper_mode kept for existing dashboard components
+        # (RiskPanel, StatusBar, page.tsx read these directly).
         "dry_run":             DRY_RUN,
         "paper_mode":          ALPACA_PAPER,
+        **_execution_mode_fields(),
     }
 
 
@@ -6251,7 +6496,7 @@ def _build_end_of_day_review() -> dict:
     try:
         with journal._conn() as con:
             rows = con.execute(
-                "SELECT realized_pnl FROM paper_trades WHERE is_open=0 AND exit_timestamp >= ?",
+                f"SELECT realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} AND exit_timestamp >= ?",
                 (_session_start.isoformat(),),
             ).fetchall()
             session_closed        = len(rows)
@@ -6310,7 +6555,7 @@ def _build_end_of_day_review() -> dict:
         try:
             with journal._conn() as con:
                 row = con.execute(
-                    "SELECT symbol, realized_pnl FROM paper_trades WHERE is_open=0 "
+                    f"SELECT symbol, realized_pnl FROM paper_trades WHERE {journal.ELIGIBLE_TRADE_SQL} "
                     "AND exit_timestamp >= ? ORDER BY realized_pnl DESC LIMIT 1",
                     (_session_start.isoformat(),),
                 ).fetchone()
