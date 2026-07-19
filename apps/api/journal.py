@@ -79,9 +79,41 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     intraday_confirmed    INTEGER,
     entry_score           INTEGER,
     entry_grade           TEXT,
-    is_open               INTEGER DEFAULT 1
+    is_open               INTEGER DEFAULT 1,
+    data_quality_status   TEXT NOT NULL DEFAULT 'verified',
+    data_quality_note     TEXT
 )
 """
+
+# Small, intentional set of data-quality states for paper_trades.
+#   verified               — normal trade, safe to use in performance statistics.
+#   suspect_zero_exit      — closed with a fabricated/unavailable exit price (e.g. no
+#                             broker fill could be located); numbers are not trustworthy.
+#   unresolved_reconciliation — journal said open, broker had no matching position/fill;
+#                             no price was invented, exit_price is left NULL.
+#   pending_entry_fill     — order accepted by the broker but not confirmed filled before
+#                             our poll timeout; entry_price is the decision-time estimate.
+DATA_QUALITY_STATUSES = {
+    "verified",
+    "suspect_zero_exit",
+    "unresolved_reconciliation",
+    "pending_entry_fill",
+}
+
+# Single reusable predicate for "this closed trade is trustworthy enough to use in
+# performance statistics" — every analytics query (journal.py, app/services/analytics.py,
+# and the raw session/daily aggregates in main.py) must filter through this, so a
+# fabricated zero-price reconciliation row can never corrupt P&L, win rate, expectancy,
+# profit factor, or drawdown.
+ELIGIBLE_TRADE_SQL = (
+    "is_open = 0 "
+    "AND realized_pnl IS NOT NULL "
+    "AND exit_price IS NOT NULL AND exit_price > 0 "
+    "AND entry_price IS NOT NULL AND entry_price > 0 "
+    "AND (data_quality_status IS NULL OR data_quality_status = 'verified') "
+    "AND exit_reason NOT IN ('reconcile_stale', 'unresolved_reconciliation') "
+    "AND NOT (exit_reason = 'auto_closed_bracket' AND (exit_price IS NULL OR exit_price <= 0))"
+)
 
 
 @contextmanager
@@ -109,6 +141,13 @@ def _migrate_db(con):
     for col, typ in [("entry_score", "INTEGER"), ("entry_grade", "TEXT")]:
         if col not in existing_paper:
             con.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {typ}")
+    if "data_quality_status" not in existing_paper:
+        con.execute(
+            "ALTER TABLE paper_trades ADD COLUMN data_quality_status "
+            "TEXT NOT NULL DEFAULT 'verified'"
+        )
+    if "data_quality_note" not in existing_paper:
+        con.execute("ALTER TABLE paper_trades ADD COLUMN data_quality_note TEXT")
 
 
 def init_db():
@@ -197,9 +236,19 @@ def has_open_paper_trade(symbol: str) -> bool:
 
 
 def open_paper_trade(symbol: str, entry: dict):
-    """Record a newly entered paper trade. Call this on BUY execution."""
+    """
+    Record a newly entered paper trade. Call this on BUY execution.
+
+    entry may include data_quality_status (default "verified") / data_quality_note —
+    e.g. "pending_entry_fill" when the caller could not confirm a broker fill within
+    its poll budget and entry_price is only the decision-time estimate.
+    """
     def _bool_int(v):
         return int(bool(v)) if v is not None else None
+
+    status = entry.get("data_quality_status") or "verified"
+    if status not in DATA_QUALITY_STATUSES:
+        raise ValueError(f"Unknown data_quality_status: {status!r}")
 
     sql = """
     INSERT INTO paper_trades (
@@ -207,13 +256,15 @@ def open_paper_trade(symbol: str, entry: dict):
         trailing_stop_pct, qty, slippage_pct,
         entry_tier, rsi, macd_line, macd_signal_line, macd_histogram,
         macd_histogram_rising, trend_strength, volume_confirmed,
-        breakout_confirmed, intraday_confirmed, entry_score, entry_grade, is_open
+        breakout_confirmed, intraday_confirmed, entry_score, entry_grade, is_open,
+        data_quality_status, data_quality_note
     ) VALUES (
         :symbol, :entry_timestamp, :entry_price, :stop_price, :take_profit_price,
         :trailing_stop_pct, :qty, :slippage_pct,
         :entry_tier, :rsi, :macd_line, :macd_signal_line, :macd_histogram,
         :macd_histogram_rising, :trend_strength, :volume_confirmed,
-        :breakout_confirmed, :intraday_confirmed, :entry_score, :entry_grade, 1
+        :breakout_confirmed, :intraday_confirmed, :entry_score, :entry_grade, 1,
+        :data_quality_status, :data_quality_note
     )
     """
     try:
@@ -239,21 +290,46 @@ def open_paper_trade(symbol: str, entry: dict):
                 "intraday_confirmed":   _bool_int(entry.get("intraday_confirmed")),
                 "entry_score":          entry.get("entry_score"),
                 "entry_grade":          entry.get("entry_grade"),
+                "data_quality_status":  status,
+                "data_quality_note":    entry.get("data_quality_note"),
             })
     except Exception as e:
         print(f"[journal] WARNING: failed to open paper trade for {symbol}: {e}")
 
 
-def close_paper_trade(symbol: str, exit_price: float, exit_reason: str):
+def close_paper_trade(
+    symbol: str,
+    exit_price: Optional[float],
+    exit_reason: str,
+    data_quality_status: str = "verified",
+    data_quality_note: Optional[str] = None,
+):
     """
     Close the most recent open paper trade for symbol.
     PnL includes slippage stored at entry time.
     Approximation: uses signal-bar close as exit price (end-of-bar, not exact tick).
+
+    exit_price may be None when no real broker fill could be found (see
+    _reconcile_journal_state / already_held docs in main.py) — in that case no
+    price is fabricated, realized PnL is left NULL, and the caller is expected to
+    pass data_quality_status="unresolved_reconciliation" so analytics excludes it.
+
+    data_quality_status must be one of DATA_QUALITY_STATUSES; callers reporting a
+    fabricated/unavailable price (e.g. exit_price=0.0) should pass "suspect_zero_exit"
+    or "unresolved_reconciliation" so this row is excluded from performance stats.
+
+    A clean exit (the default "verified") never overwrites a data-quality flag that
+    was already set at entry time (e.g. "pending_entry_fill") — a trade whose entry
+    price was never confirmed against a broker fill stays suspect regardless of how
+    cleanly it closed.
     """
+    if data_quality_status not in DATA_QUALITY_STATUSES:
+        raise ValueError(f"Unknown data_quality_status: {data_quality_status!r}")
     try:
         with _conn() as con:
             row = con.execute(
-                "SELECT id, entry_timestamp, entry_price, stop_price, qty, slippage_pct "
+                "SELECT id, entry_timestamp, entry_price, stop_price, qty, slippage_pct, "
+                "data_quality_status, data_quality_note "
                 "FROM paper_trades WHERE symbol=? AND is_open=1 "
                 "ORDER BY entry_timestamp DESC LIMIT 1",
                 (symbol,),
@@ -268,20 +344,28 @@ def close_paper_trade(symbol: str, exit_price: float, exit_reason: str):
             slippage    = row["slippage_pct"] or 0.0
             entry_ts    = row["entry_timestamp"]
 
-            # Slippage: buy higher on entry, sell lower on exit
-            eff_entry = entry_price * (1 + slippage)
-            eff_exit  = exit_price  * (1 - slippage)
+            existing_status = row["data_quality_status"] or "verified"
+            if data_quality_status == "verified" and existing_status != "verified":
+                # Don't let a clean exit retroactively launder an already-flagged entry.
+                data_quality_status = existing_status
+                data_quality_note   = row["data_quality_note"] or data_quality_note
 
-            realized_pnl     = round((eff_exit - eff_entry) * qty, 4)
-            realized_pnl_pct = (
-                round((eff_exit - eff_entry) / eff_entry * 100, 4)
-                if eff_entry > 0 else 0.0
-            )
-            risk_per_share = eff_entry - stop_price
-            realized_r = (
-                round((eff_exit - eff_entry) / risk_per_share, 4)
-                if risk_per_share > 0 else None
-            )
+            realized_pnl = realized_pnl_pct = realized_r = None
+            if exit_price is not None:
+                # Slippage: buy higher on entry, sell lower on exit
+                eff_entry = entry_price * (1 + slippage)
+                eff_exit  = exit_price  * (1 - slippage)
+
+                realized_pnl     = round((eff_exit - eff_entry) * qty, 4)
+                realized_pnl_pct = (
+                    round((eff_exit - eff_entry) / eff_entry * 100, 4)
+                    if eff_entry > 0 else 0.0
+                )
+                risk_per_share = eff_entry - stop_price
+                realized_r = (
+                    round((eff_exit - eff_entry) / risk_per_share, 4)
+                    if risk_per_share > 0 else None
+                )
 
             exit_ts = datetime.now(timezone.utc).isoformat()
             hold_minutes = None
@@ -296,20 +380,44 @@ def close_paper_trade(symbol: str, exit_price: float, exit_reason: str):
                 UPDATE paper_trades SET
                     exit_timestamp=?, exit_price=?, exit_reason=?,
                     realized_pnl=?, realized_pnl_pct=?, realized_r_multiple=?,
-                    hold_time_minutes=?, is_open=0
+                    hold_time_minutes=?, is_open=0,
+                    data_quality_status=?, data_quality_note=?
                 WHERE id=?
             """, (
                 exit_ts, exit_price, exit_reason,
                 realized_pnl, realized_pnl_pct, realized_r,
-                hold_minutes, trade_id,
+                hold_minutes, data_quality_status, data_quality_note, trade_id,
             ))
 
             print(
                 f"[journal] {symbol} paper trade closed | exit={exit_price} "
-                f"reason={exit_reason} pnl={realized_pnl} R={realized_r}"
+                f"reason={exit_reason} pnl={realized_pnl} R={realized_r} "
+                f"data_quality={data_quality_status}"
             )
     except Exception as e:
         print(f"[journal] WARNING: failed to close paper trade for {symbol}: {e}")
+
+
+def mark_paper_trade_data_quality(trade_id: int, status: str, note: Optional[str] = None) -> bool:
+    """
+    Administrative, idempotent helper to (re)tag an existing paper_trades row's
+    data_quality_status without touching exit_price, exit_reason, or realized PnL.
+
+    Never deletes or rewrites historical fill/PnL data — only adjusts the label used
+    by analytics to decide whether the row is trustworthy. Safe to call more than once.
+    """
+    if status not in DATA_QUALITY_STATUSES:
+        raise ValueError(f"Unknown data_quality_status: {status!r}")
+    try:
+        with _conn() as con:
+            cur = con.execute(
+                "UPDATE paper_trades SET data_quality_status=?, data_quality_note=? WHERE id=?",
+                (status, note, trade_id),
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"[journal] WARNING: failed to set data_quality_status for trade {trade_id}: {e}")
+        return False
 
 
 def partial_close_paper_trade(symbol: str, qty_sold: int, exit_price: float, entry_price: float) -> Optional[float]:
@@ -381,17 +489,33 @@ def query_performance_summary() -> dict:
             total_exits   = con.execute("SELECT COUNT(*) FROM paper_trades WHERE is_open=0").fetchone()[0]
             open_count    = con.execute("SELECT COUNT(*) FROM paper_trades WHERE is_open=1").fetchone()[0]
 
+            excluded_ids = [
+                r[0] for r in con.execute(
+                    f"SELECT id FROM paper_trades WHERE is_open=0 AND NOT ({ELIGIBLE_TRADE_SQL})"
+                ).fetchall()
+            ]
+            excluded_count = len(excluded_ids)
+            data_quality_warning = (
+                f"{excluded_count} closed trade(s) excluded from performance stats due to "
+                f"unverified/fabricated exit data: ids {excluded_ids}"
+                if excluded_count else None
+            )
+
             closed = con.execute(
-                "SELECT realized_pnl, realized_r_multiple, hold_time_minutes "
-                "FROM paper_trades WHERE is_open=0 AND realized_pnl IS NOT NULL"
+                f"SELECT realized_pnl, realized_r_multiple, hold_time_minutes "
+                f"FROM paper_trades WHERE {ELIGIBLE_TRADE_SQL}"
             ).fetchall()
 
             if not closed:
                 return {
-                    "total_entries":  total_entries,
-                    "total_exits":    total_exits,
-                    "open_positions": open_count,
-                    "message":        "No closed trades yet",
+                    "total_entries":         total_entries,
+                    "total_exits":           total_exits,
+                    "open_positions":        open_count,
+                    "eligible_trade_count":  0,
+                    "excluded_trade_count":  excluded_count,
+                    "excluded_trade_ids":    excluded_ids,
+                    "data_quality_warning":  data_quality_warning,
+                    "message":               "No closed trades yet",
                 }
 
             pnls   = [r["realized_pnl"] for r in closed]
@@ -423,8 +547,8 @@ def query_performance_summary() -> dict:
 
             # Best/worst symbol
             sym_rows = con.execute(
-                "SELECT symbol, SUM(realized_pnl) as total FROM paper_trades "
-                "WHERE is_open=0 AND realized_pnl IS NOT NULL GROUP BY symbol"
+                f"SELECT symbol, SUM(realized_pnl) as total FROM paper_trades "
+                f"WHERE {ELIGIBLE_TRADE_SQL} GROUP BY symbol"
             ).fetchall()
             sym_pnl = {r["symbol"]: r["total"] for r in sym_rows}
 
@@ -432,6 +556,10 @@ def query_performance_summary() -> dict:
                 "total_entries":       total_entries,
                 "total_exits":         total_exits,
                 "open_positions":      open_count,
+                "eligible_trade_count": len(closed),
+                "excluded_trade_count": excluded_count,
+                "excluded_trade_ids":   excluded_ids,
+                "data_quality_warning": data_quality_warning,
                 "win_rate":            win_rate,
                 "loss_rate":           loss_rate,
                 "avg_win":             avg_win,
@@ -478,10 +606,15 @@ def query_symbol_performance() -> list:
                 blocker_breakdown = {r["blocked_by"]: r["cnt"] for r in blocker_rows}
 
                 closed = con.execute(
-                    "SELECT realized_pnl, realized_r_multiple FROM paper_trades "
-                    "WHERE symbol=? AND is_open=0 AND realized_pnl IS NOT NULL",
+                    f"SELECT realized_pnl, realized_r_multiple FROM paper_trades "
+                    f"WHERE symbol=? AND {ELIGIBLE_TRADE_SQL}",
                     (sym,),
                 ).fetchall()
+                excluded_count = con.execute(
+                    f"SELECT COUNT(*) FROM paper_trades "
+                    f"WHERE symbol=? AND is_open=0 AND NOT ({ELIGIBLE_TRADE_SQL})",
+                    (sym,),
+                ).fetchone()[0]
 
                 pnls = [r["realized_pnl"] for r in closed]
                 rs   = [r["realized_r_multiple"] for r in closed if r["realized_r_multiple"] is not None]
@@ -492,6 +625,8 @@ def query_symbol_performance() -> list:
                     "total_setups":      total_setups,
                     "entries_taken":     entries_taken,
                     "blocked_count":     blocked_count,
+                    "eligible_trade_count": len(pnls),
+                    "excluded_trade_count": excluded_count,
                     "win_rate":          round(len(wins) / len(pnls) * 100, 1) if pnls else None,
                     "total_pnl":         round(sum(pnls), 4) if pnls else 0.0,
                     "avg_pnl":           round(sum(pnls) / len(pnls), 4) if pnls else None,
@@ -514,17 +649,33 @@ def query_stable_v2_performance(start_date: str) -> dict:
     try:
         with _conn() as con:
             closed = con.execute(
-                "SELECT realized_pnl, realized_r_multiple, hold_time_minutes, entry_grade "
-                "FROM paper_trades "
-                "WHERE is_open=0 AND realized_pnl IS NOT NULL "
-                "AND entry_timestamp >= ?",
+                f"SELECT realized_pnl, realized_r_multiple, hold_time_minutes, entry_grade "
+                f"FROM paper_trades "
+                f"WHERE {ELIGIBLE_TRADE_SQL} AND entry_timestamp >= ?",
                 (start_date,),
             ).fetchall()
+            excluded_ids = [
+                r[0] for r in con.execute(
+                    f"SELECT id FROM paper_trades WHERE is_open=0 AND entry_timestamp >= ? "
+                    f"AND NOT ({ELIGIBLE_TRADE_SQL})",
+                    (start_date,),
+                ).fetchall()
+            ]
+            excluded_count = len(excluded_ids)
+            data_quality_warning = (
+                f"{excluded_count} closed trade(s) excluded from stable-v2 stats due to "
+                f"unverified/fabricated exit data: ids {excluded_ids}"
+                if excluded_count else None
+            )
 
             if not closed:
                 return {
                     "stable_v2_start_date": start_date,
                     "total_closed":         0,
+                    "eligible_trade_count": 0,
+                    "excluded_trade_count": excluded_count,
+                    "excluded_trade_ids":   excluded_ids,
+                    "data_quality_warning": data_quality_warning,
                     "message":              "No stable-v2 trades recorded yet",
                 }
 
@@ -572,6 +723,10 @@ def query_stable_v2_performance(start_date: str) -> dict:
             return {
                 "stable_v2_start_date":   start_date,
                 "total_closed":           len(closed),
+                "eligible_trade_count":   len(closed),
+                "excluded_trade_count":   excluded_count,
+                "excluded_trade_ids":     excluded_ids,
+                "data_quality_warning":   data_quality_warning,
                 "win_rate":               win_rate,
                 "loss_rate":              loss_rate,
                 "avg_win":                avg_win,
@@ -597,7 +752,8 @@ def query_recent_trades(limit: int = 20) -> list:
             rows = con.execute(
                 "SELECT symbol, entry_timestamp, exit_timestamp, entry_price, exit_price, "
                 "exit_reason, realized_pnl, realized_pnl_pct, realized_r_multiple, "
-                "qty, entry_tier, hold_time_minutes, is_open "
+                "qty, entry_tier, hold_time_minutes, is_open, "
+                "data_quality_status, data_quality_note "
                 "FROM paper_trades ORDER BY entry_timestamp DESC LIMIT ?",
                 (limit,),
             ).fetchall()

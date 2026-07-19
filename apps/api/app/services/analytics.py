@@ -40,14 +40,19 @@ def _et_hour(ts: str) -> Optional[int]:
 
 
 def _fetch_closed_trades(days: int, symbol: Optional[str] = None) -> list:
-    """Closed trades exited on/after the cutoff, oldest first."""
+    """
+    Performance-eligible closed trades exited on/after the cutoff, oldest first.
+
+    Filters through journal.ELIGIBLE_TRADE_SQL so a fabricated/unresolved-reconciliation
+    exit (e.g. exit_price=0.0) can never corrupt equity curves, trends, or Hermes summaries.
+    """
     cutoff = _cutoff_date(days)
     query = (
         "SELECT symbol, entry_timestamp, exit_timestamp, entry_price, exit_price, "
         "exit_reason, realized_pnl, realized_pnl_pct, realized_r_multiple, "
         "hold_time_minutes, qty, entry_tier, entry_score, entry_grade "
         "FROM paper_trades "
-        "WHERE is_open=0 AND realized_pnl IS NOT NULL AND exit_timestamp >= ?"
+        f"WHERE {journal.ELIGIBLE_TRADE_SQL} AND exit_timestamp >= ?"
     )
     params: list = [cutoff]
     if symbol:
