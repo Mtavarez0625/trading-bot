@@ -31,8 +31,17 @@ export interface DashboardData {
   recent_events: BotEvent[];
   alerts_enabled: boolean;
   daily_loss_shutdown: boolean;
+  /** @deprecated use dry_run from ExecutionMode fields below (still present, unchanged) */
   dry_run: boolean;
+  /** @deprecated use paper_trading */
   paper_mode: boolean;
+  environment: "paper" | "live";
+  execution_mode: "dry_run" | "paper_live" | "live_money" | "live_locked_out";
+  paper_trading: boolean;
+  real_money_trading: boolean;
+  live_trading_locked: boolean;
+  /** @deprecated use execution_mode */
+  bot_mode: string;
 }
 
 export interface Account {
